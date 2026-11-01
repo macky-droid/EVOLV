@@ -259,6 +259,11 @@ var (
 	dreamUsed  = map[string]bool{}
 )
 
+// ResetMockState clears the offline demo brain's session memory. The daemon
+// keeps this state across turns; tests use the reset so shuffled execution
+// cannot make one scenario inherit another scenario's evolved organs.
+func ResetMockState() { resetDreamState() }
+
 // resetDreamState resets the autonomous-dream memory (used by tests; the
 // daemon keeps it across turns so dreams stay coherent within a run).
 func resetDreamState() {

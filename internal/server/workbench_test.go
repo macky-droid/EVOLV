@@ -17,7 +17,7 @@ func newWbServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-t.Setenv("USERPROFILE", home) // os.UserHomeDir uses this on Windows
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir uses this on Windows
 	ws, err := workspace.Load(nil)
 	if err != nil {
 		t.Fatal(err)

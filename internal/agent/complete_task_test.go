@@ -30,7 +30,7 @@ func TestCompleteTaskSuccess(t *testing.T) {
 		Action:      "complete_task",
 		Summary:     "Optimized query indexes and verified benchmarks",
 		Status:      "success",
-		FilesList:    []string{"schema.sql", "queries.go"},
+		FilesList:   []string{"schema.sql", "queries.go"},
 		TestsPassed: 18,
 		TestsFailed: 0,
 		Confidence:  "high",

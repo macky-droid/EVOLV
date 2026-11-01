@@ -69,10 +69,10 @@ type ImportReport struct {
 }
 
 const (
-	PackFormatV1     = "evolvpack/v1"
+	PackFormatV1      = "evolvpack/v1"
 	ManifestEntryName = "manifest.json"
-	QuarantineNotice = "QUARANTINE.md"
-	QuarantineSuffix = ".quarantine"
+	QuarantineNotice  = "QUARANTINE.md"
+	QuarantineSuffix  = ".quarantine"
 )
 
 // secretPatterns catches common token shapes to prevent accidental credential leakage.

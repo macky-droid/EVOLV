@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,35 @@ import (
 type fileMutation struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+}
+
+// fileMutationList accepts both protocol shapes models actually emit:
+//
+//	"files": [{"path":"a.go","content":"..."}]
+//	"files": ["a.go","b.go"]              (complete_task uses paths)
+//
+// Without the second shape, a perfectly reasonable complete_task payload fails
+// at JSON decode time and the whole batch is dropped.
+type fileMutationList []fileMutation
+
+func (l *fileMutationList) UnmarshalJSON(raw []byte) error {
+	var objs []fileMutation
+	if err := json.Unmarshal(raw, &objs); err == nil {
+		*l = objs
+		return nil
+	}
+	var paths []string
+	if err := json.Unmarshal(raw, &paths); err != nil {
+		return fmt.Errorf("files must be [{path, content}] or a list of paths")
+	}
+	out := make(fileMutationList, 0, len(paths))
+	for _, p := range paths {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, fileMutation{Path: p})
+		}
+	}
+	*l = out
+	return nil
 }
 
 // selfModifyOptions defines parameters for kernel self-modification.

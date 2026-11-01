@@ -33,6 +33,15 @@ type pluginVM struct {
 	perms        map[string]bool
 	loadTimeout  time.Duration
 	eventTimeout time.Duration
+	stop         chan struct{}
+	stopOnce     sync.Once
+}
+
+// Stop retires the plugin's scheduler. The VM is never reused after this; a
+// reload builds a fresh sandbox. Idempotent so both LoadAll and evolve_plugin
+// can call it without coordinating.
+func (p *pluginVM) Stop() {
+	p.stopOnce.Do(func() { close(p.stop) })
 }
 
 // SetEventTimeout sets the execution timeout for event handlers and timer callbacks.
@@ -83,6 +92,7 @@ func (r *JSRuntime) buildPluginVM(name, code string, perms []string) (*pluginVM,
 		perms:        map[string]bool{},
 		loadTimeout:  loadTimeout,
 		eventTimeout: DefaultPluginEventTimeout,
+		stop:         make(chan struct{}),
 	}
 	for _, c := range perms {
 		p.perms[strings.TrimSpace(strings.ToLower(c))] = true
@@ -148,7 +158,12 @@ func (r *JSRuntime) buildPluginVM(name, code string, perms []string) (*pluginVM,
 func (p *pluginVM) loop() {
 	t := time.NewTicker(50 * time.Millisecond)
 	defer t.Stop()
-	for range t.C {
+	for {
+		select {
+		case <-p.stop:
+			return
+		case <-t.C:
+		}
 		// drain pending events (at most a few per tick)
 		for i := 0; i < 8; i++ {
 			select {

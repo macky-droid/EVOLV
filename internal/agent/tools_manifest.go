@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -74,9 +75,18 @@ var validSchemaTypes = map[string]bool{
 
 // validateToolArgs checks args against the manifest schema. Declared params
 // must be present with the right Go type; extra args are passed through.
+// Parameters are checked in name order so the reported error is deterministic
+// (map iteration order previously made the same bad call name "a" or "b" at
+// random, which also made the regression test flaky).
 func validateToolArgs(schema map[string]string, args map[string]any) error {
-	for param, want := range schema {
-		want = strings.ToLower(strings.TrimSpace(want))
+	params := make([]string, 0, len(schema))
+	for param := range schema {
+		params = append(params, param)
+	}
+	sort.Strings(params)
+
+	for _, param := range params {
+		want := strings.ToLower(strings.TrimSpace(schema[param]))
 		if !validSchemaTypes[want] {
 			return fmt.Errorf("tool schema declares unknown type %q for %q (use string|number|boolean|object|array|any)", want, param)
 		}

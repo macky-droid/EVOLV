@@ -142,6 +142,7 @@ type action struct {
 	Code           string            `json:"code"`
 	Content        string            `json:"content"`
 	Path           string            `json:"path"`
+	From           string            `json:"from"`
 	To             string            `json:"to"`
 	Find           string            `json:"find"`
 	Replace        string            `json:"replace"`
@@ -149,24 +150,25 @@ type action struct {
 	Depth          int               `json:"depth"`
 	Cwd            string            `json:"cwd"`
 	Command        string            `json:"command"`
-Framework      string            `json:"framework"`
+	Framework      string            `json:"framework"`
 	Args           map[string]any    `json:"args"`
 	Steps          []planStepArg     `json:"steps"`
 	Schema         map[string]string `json:"schema"`
 	Perms          []string          `json:"perms"`
-	Files          []fileMutation    `json:"files,omitempty"`
+	Files          fileMutationList  `json:"files,omitempty"`
 	FilesMap       map[string]string `json:"files_map,omitempty"`
 	ExpectedHashes map[string]string `json:"expected_hashes,omitempty"`
 	Summary        string            `json:"summary,omitempty"`
 	Status         string            `json:"status,omitempty"`
 	FilesList      []string          `json:"files_list,omitempty"`
-	TestsPassed   int               `json:"tests_passed,omitempty"`
-	TestsFailed   int               `json:"tests_failed,omitempty"`
-	Confidence    string            `json:"confidence,omitempty"`
-	Notes         string            `json:"notes,omitempty"`
+	TestsPassed    int               `json:"tests_passed,omitempty"`
+	TestsFailed    int               `json:"tests_failed,omitempty"`
+	Confidence     string            `json:"confidence,omitempty"`
+	Notes          string            `json:"notes,omitempty"`
 	Message        string            `json:"message,omitempty"`
 	RunTests       *bool             `json:"run_tests,omitempty"`
 	StageOnly      bool              `json:"stage_only,omitempty"`
+	Confirm        bool              `json:"confirm,omitempty"`
 	SourceRoot     string            `json:"source_root,omitempty"`
 	TargetLauncher string            `json:"target_launcher,omitempty"`
 	TestPkg        string            `json:"test_pkg,omitempty"`
@@ -202,6 +204,7 @@ func (a *Agent) SystemPrompt() string {
 		src = "not found — you can still edit every file in your organism home"
 	}
 	prompt := basePrompt
+	prompt = strings.ReplaceAll(prompt, "{{SYSTEM_INFO}}", a.ws.SystemInfo())
 	prompt = strings.ReplaceAll(prompt, "{{EVOLV_HOME}}", a.ws.Root)
 	prompt = strings.ReplaceAll(prompt, "{{LAUNCHER}}", launcher)
 	prompt = strings.ReplaceAll(prompt, "{{SOURCE_ROOT}}", src)
@@ -251,17 +254,38 @@ func (a *Agent) SystemPrompt() string {
 		}
 	}
 
-	// skills (titles + first lines; full file is readable via read_file)
-	if skills, err := a.listDir(a.ws.Dir(workspace.SkillsDir), ".md"); err == nil && len(skills) > 0 {
-		b.WriteString("\n## SKILLS (grown into yourself)\n")
+	// skills: a compact, filtered index. The body is deliberately NOT inlined —
+	// the agent reads the named file when its trigger matches, which keeps the
+	// prompt bounded as the organism learns more playbooks.
+	if skills := loadSkillIndex(a.ws.Dir(workspace.SkillsDir)); len(skills) > 0 {
+		shown := 0
+		var lines []string
 		for _, s := range skills {
-			if a.profile != nil && !containsName(a.profile.Skills, strings.TrimSuffix(filepath.Base(s), ".md")) {
+			if a.profile != nil && !containsName(a.profile.Skills, s.Name) {
 				continue
 			}
-			raw, _ := os.ReadFile(s)
-			first := strings.SplitN(strings.TrimSpace(string(raw)), "\n", 2)
-			title := strings.TrimPrefix(first[0], "# ")
-			b.WriteString("- " + title + " (skills/" + filepath.Base(s) + ")\n")
+			line := "- " + s.Name
+			if s.Title != "" && !strings.EqualFold(s.Title, humanizeName(s.Name)) {
+				line += " · " + s.Title
+			}
+			if s.Summary != "" {
+				line += " — " + s.Summary
+			}
+			line += "  (" + s.Path + ")"
+			lines = append(lines, line)
+			shown++
+			if shown >= skillIndexLimit {
+				break
+			}
+		}
+		if len(lines) > 0 {
+			b.WriteString("\n## SKILLS — read the matching playbook before acting\n")
+			for _, line := range lines {
+				b.WriteString(line + "\n")
+			}
+			if shown < len(skills) {
+				b.WriteString(fmt.Sprintf("(+%d more under workspace/skills; use list_dir to inspect them)\n", len(skills)-shown))
+			}
 		}
 	}
 

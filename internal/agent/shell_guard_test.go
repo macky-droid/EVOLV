@@ -77,7 +77,6 @@ func TestCheckShellCommand_SafeCommandsAllowed(t *testing.T) {
 	}
 }
 
-
 func TestAgentShellExecutionGuard(t *testing.T) {
 	a := testAgent(t)
 

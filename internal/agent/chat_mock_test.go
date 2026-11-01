@@ -14,6 +14,7 @@ import (
 // mockAgent wires an agent to the offline mock mind.
 func mockAgent(t *testing.T) (*Agent, *workspace.W) {
 	t.Helper()
+	providers.ResetMockState() // each scenario starts from the factory demo brain
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)

@@ -7,6 +7,7 @@
 **EVOLV is a self-evolving AI agent workspace: a self-modifying coding agent that grows its own UI, tools, skills, prompts and plugins live while you watch.** Local-first, single Go binary, works with Ollama or any API key — and the demo below needs none.
 
 [![GitHub stars](https://img.shields.io/github/stars/dxn111/EVOLV?style=flat-square&color=8b5cf6)](https://github.com/dxn111/EVOLV/stargazers)
+[![CI](https://github.com/dxn111/EVOLV/actions/workflows/ci.yml/badge.svg)](https://github.com/dxn111/EVOLV/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8b93ab?style=flat-square)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/dxn111/EVOLV?style=flat-square&color=22d3ee)](https://github.com/dxn111/EVOLV/releases)
 
@@ -143,16 +144,18 @@ Every dream is a real conversation turn, so the organism *remembers its dreams* 
 
 | Action | What it does |
 |---|---|
+| `set_plan` / `plan_advance` / `complete_task` | persistent task state, one-call progress, and a structured completion report |
 | `evolve_component` | mounts a new live UI panel mid-conversation |
-| `evolve_tool` | compiles a JS tool into its sandbox and calls it |
-| `evolve_skill` / `evolve_prompt` | grows its own memory and system prompt |
+| `evolve_tool` / `run_tool` / `list_tools` | compiles a JS tool into its sandbox, with an optional typed argument schema |
+| `evolve_skill` / `evolve_prompt` | grows its own playbooks and system prompt |
 | `evolve_plugin` | installs a **live** plugin: own sandbox, reacts to bus events via `evolv.on`, real timers via `evolv.every` |
-| `write_file` / `edit_file` / `read_file` | any file, any path on your machine |
+| `write_file` / `edit_file` / `read_file` | any file, any path on your machine (hash-guarded writes) |
 | `list_dir` / `tree` / `map_repo` / `move` / `delete_file` | filesystem navigation plus a cached Go/JS/TS repository outline |
-| `set_project` / `shell` | binds your project root, runs commands (120s timeout) |
+| `run_tests` / `set_project` / `shell` | auto-detected test suites, project binding, commands (120s timeout) |
 | `snapshot` / `rollback` | time travel: freeze the genome, rewind the whole organism |
+| `stage_candidate` / `list_candidates` / `promote_candidate` | isolated, hash-pinned kernel proposals with an explicit promotion gate |
+| `self_modify` / `self_update` | compile, test and stage a kernel candidate, or morph to the latest release |
 | `reload_shell` | forces the browser to recompile its UI now |
-| `self_update` | morphs itself to the latest released binary mid-chat |
 
 Every mutation is logged to `workspace/evolution.jsonl` and streamed to your screen as it happens. And you can play too: **the body is plain files.** Edit anything in `~/.evolv/workspace/` — it hot-reloads.
 
@@ -262,6 +265,22 @@ And because small free models are sloppy, the parser is deliberately forgiving �
 
 > Wait — `snapshots/` sits at `~/.evolv/snapshots/`, one level above `workspace/`. It holds the last 20 complete genome states, newest first.
 
+### The skills it boots with
+
+Skills are markdown playbooks, indexed in the system prompt with a one-line trigger and loaded only when the match fires. A newborn organism ships with:
+
+| Skill | When it fires |
+|---|---|
+| `systematic-debugging` | a build, test, or runtime failure with no obvious cause |
+| `test-driven-change` | fixing a bug or adding behavior that can be checked |
+| `self-evolution-playbook` | rewriting its own UI, tools, prompts, plugins, or kernel |
+| `frontend-craft` | growing a component or restyling the shell |
+| `repo-cartography` | entering an unfamiliar repo or planning a wide change |
+| `secure-by-default` | credentials, shell, plugins, paths, or network access |
+| `workspace-steward` | deciding what earns space on the canvas |
+
+Skills are yours too: add a `.md` under `~/.evolv/workspace/skills/` (optional YAML frontmatter with `name` + `description`) and the next turn can find it. The organism can also grow one for you with `evolve_skill`.
+
 ### Under the hood
 
 ```
@@ -324,11 +343,11 @@ Treat it like a very eager intern with root: brilliant, fun, supervise according
 
 | Version | What evolved |
 |---|---|
-| **Unreleased — DNA workspace** | **manage what the organism grows** — theme-aware live DNA background and hologram, DNA Builder with EVOLV1 plus persistent numbered strands, per-strand identity/memory/tool/skill encoding, Creation Library, live pinned sidebar widgets, enable/archive controls, SHA-256 stale-write guards, and isolated candidate evolution that must test/build green and pass a second hash check before explicit promotion; integrates upstream reasoning streaming and the safer animated installer |
+| **v0.30.0** | **the mind gets a playbook, the pipeline gets a gate** — the system prompt is now an operating manual: frame → plan → inspect → mutate → verify → report, with exact action signatures, stale-write discipline, secret and destructive-command rails, kernel-surgery rules and a definition of done; seven seeded skills are discovered through a compact trigger index (systematic debugging, test-driven change, self-evolution, frontend craft, repo cartography, secure-by-default, canvas stewardship) and load only when they match; **bug fixes**: `move {from,to}` parses again, `complete_task.files` accepts path lists instead of failing at decode, empty/root `delete_file` can no longer wipe the organism, plugin reload/re-evolve retires old sandboxes instead of leaking timers, broken `evolve_tool` JavaScript is reported instead of silently "compiling", tool schema validation is deterministic, and `promote_candidate` requires explicit confirmation; **CI workflow** (gofmt + vet + tests + race + cross-build) and release builds now use `go.mod`'s Go version and test before publishing; includes the DNA workspace — DNA Builder strands, Creation Library, live pinned widgets, enable/archive controls, SHA-256 stale-write guards and isolated candidate evolution that must test/build green before explicit promotion |
 | **v0.29.0** | **search the whole project from the Workbench** — new `⌕ search` box greps every text file under the project root (case-insensitive, `.git`/`node_modules`/… respected, capped at 200 hits with a "showing first 200" hint, per-match file:line + context); click a result and the editor **opens the file with the caret exactly on the match line, selection highlighting it**; new `/api/wb/search` endpoint + test; **verified live: 14/14 browser E2E** |
 | **v0.28.0** | **the Workbench — a real dev environment for your project** — new `🛠 Workbench` opens the bound project (config.project_dir, or organism home): lazy file tree with type icons + sizes and skip-list (`.git`, `node_modules`, …), in-place text editor with **ctrl+s write-to-disk**, new file/dir, rename/move, delete, live refresh (the tree updates when anything else touches the project); behind it a full fs API (`/api/wb/{root,tree,read,write,mkdir,delete,rename}`) with **path-escape + symlink-escape hardening**, 512 KB read / 1 MB write caps and polite binary refusal; **BUG FIX: the recompile loop** — shell-reload storms (post-update seeding, dream bursts, rollbacks) could bounce the page on "recompiling shell" forever; a sessionStorage loop guard now reloads exactly once per storm; 8 new server tests + **verified live: 12/12 browser E2E** (tree → open → edit → ctrl+s → disk → rename → delete round-trip) |
 | **v0.27.0** | **plugins run in cages now** — `evolve_plugin` accepts explicit `perms:["http","fs","toast"]`; a plugin without a permission gets a **catchable error naming the missing capability** (`plugin "x" lacks permission "http" — re-evolve it with perms:["http"]`) instead of silently reaching the real world; perms persist in `plugin.json` and are restored on every reload; `log`/`on`/`every` stay core (always on); 4 new tests (denial matrix, grant path, manifest persist + reload round-trip, core-always-allowed) — full suite + `-race` green |
-| **v0.26.0** | **tools grow type systems** — `evolve_tool` accepts an optional typed contract (`schema: {param: "number"|"string"|"boolean"|"object"|"array"|"any"}`), persisted as a **versioned manifest** (`workspace/tools/<name>.json`, version auto-increments on re-evolve) and **enforced by `run_tool`**: bad calls fail with a precise type error (`arg "a" must be number, got string`) instead of a JS stack trace; new `list_tools` action gives the brain full introspection (name, description, version, schema); manifest-less legacy tools keep working; 5 new tests (manifest persistence + version bump, validation matrix, back-compat, introspection, bad-type rejection) — all green |
+| **v0.26.0** | **tools grow type systems** — `evolve_tool` accepts an optional typed contract (`schema: {param: "number" / "string" / "boolean" / "object" / "array" / "any"}`), persisted as a **versioned manifest** (`workspace/tools/<name>.json`, version auto-increments on re-evolve) and **enforced by `run_tool`**: bad calls fail with a precise type error (`arg "a" must be number, got string`) instead of a JS stack trace; new `list_tools` action gives the brain full introspection (name, description, version, schema); manifest-less legacy tools keep working; 5 new tests (manifest persistence + version bump, validation matrix, back-compat, introspection, bad-type rejection) — all green |
 | **v0.25.1** | **the demo brain works its plan the new way** — the mock planner demo now walks declare → `plan_advance` → `plan_advance`×2 (one call = one step of progress) instead of re-sending the whole `set_plan` every turn; scenario test rewritten to assert exact advance-block counts; **verified live: 9/9 browser E2E** (boot 1/4 → live march 2/4 → 3/4 → 4/4 with correct statuses each step) |
 | **v0.25.0** | **the agent works its own plan** — new `plan_advance` action: one call marks the current step done (by index or the doing step) and pulls the next todo into doing, so the brain loops through multi-step work without re-sending the whole plan; the declared plan is now **injected into the system prompt every turn** (`## CURRENT PLAN` with [x]/[~]/[ ] markers), so the model always knows where it is in its own work; plan helpers factored (`publishPlan`/`countDone`); 4 new tests (advance chain, index advance, bogus rejection, prompt injection) — all green |
 | **v0.24.0** | **the agent keeps a plan** — first slice of the P0 planner: a new `set_plan` action lets the agent declare and advance multi-step task state (`{title,status}` per step, normalized to todo/doing/done), persisted atomically to `workspace/plan.json` (survives restarts), served at `/api/plan`, broadcast live over the bus, and rendered as a sidebar Plan panel with progress counter and ☑/◐/○ statuses (boot-restored on every load); the demo brain walks a plan declare → progress → done on request |
@@ -385,6 +404,16 @@ The most fun repo on your machine to hack on:
 git clone https://github.com/dxn111/EVOLV && cd EVOLV
 make build && ./evolv
 ```
+
+Before opening a PR, run the same gate CI runs:
+
+```bash
+make check     # gofmt check + go vet + go test ./...
+make test      # tests only
+make cross     # verify every release target still builds
+```
+
+CI (`.github/workflows/ci.yml`) runs formatting, vet, tests, the race detector on the core packages, and cross-builds Linux/macOS/Windows on every push and pull request. Releases are built from `go.mod`'s Go version and tested before the binaries are published.
 
 Ideas that would be amazing: new protocol actions, a genome inspector UI, evolution replay/branching, security linting for evolved components, ports to new platforms. Open an issue or ping me directly — **I answer everything.**
 

@@ -17,8 +17,8 @@ import (
 	"github.com/dop251/goja"
 
 	"github.com/dxn111/EVOLV/internal/candidate"
-	"github.com/dxn111/EVOLV/internal/update"
 	"github.com/dxn111/EVOLV/internal/redact"
+	"github.com/dxn111/EVOLV/internal/update"
 	"github.com/dxn111/EVOLV/internal/workspace"
 )
 
@@ -125,10 +125,17 @@ func (r *JSRuntime) SetPluginLoadTimeout(d time.Duration) {
 	r.pluginLoadTimeout = d
 }
 
-// LoadAll loads every tool and plugin currently in the genome.
+// LoadAll reloads every tool and plugin from the genome. It is a full rebuild,
+// not a merge: without retiring the old sandboxes, every rollback/reload would
+// leave another live copy of each plugin running timers and handlers forever.
 func (r *JSRuntime) LoadAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, p := range r.vms {
+		p.Stop()
+	}
+	r.vms = nil
+	r.tools = map[string]toolDef{}
 	r.loadToolsLocked()
 	r.loadPluginsLocked()
 }
@@ -151,14 +158,17 @@ func (r *JSRuntime) loadToolsLocked() {
 		if err != nil {
 			continue
 		}
-		r.evalToolLocked(strings.TrimSuffix(n, ".js"), string(raw))
+		_ = r.evalToolLocked(strings.TrimSuffix(n, ".js"), string(raw))
 	}
 }
 
 // evalToolLocked compiles one tool file: `function name(args){...}` exported
-// either as a bare function declaration or via `export default`.
-func (r *JSRuntime) evalToolLocked(name, code string) {
-	src := "(function(){" + code + "; return typeof " + sanitizeIdent(name) + "==='function'? " + sanitizeIdent(name) + " : null})()"
+// either as a bare function declaration or via `export default`. It returns an
+// error instead of silently reporting success, so evolve_tool can tell the
+// model that its JavaScript did not actually compile.
+func (r *JSRuntime) evalToolLocked(name, code string) error {
+	ident := sanitizeIdent(name)
+	src := "(function(){" + code + "; return typeof " + ident + "==='function'? " + ident + " : null})()"
 	timeout := r.toolTimeout
 	if timeout <= 0 {
 		timeout = DefaultPluginLoadTimeout
@@ -173,14 +183,17 @@ func (r *JSRuntime) evalToolLocked(name, code string) {
 		if r.a != nil && r.a.bus != nil {
 			r.a.bus.Publish("plugin:log", map[string]string{"text": "tool " + name + " failed: " + err.Error()})
 		}
-		return
+		return fmt.Errorf("tool %q failed to compile: %w", name, err)
 	}
 	if goja.IsUndefined(val) || goja.IsNull(val) {
-		return
+		return fmt.Errorf("tool %q does not export a function named %s(args)", name, ident)
 	}
-	if fn, ok := goja.AssertFunction(val); ok {
-		r.tools[name] = toolDef{Name: name, fn: fn}
+	fn, ok := goja.AssertFunction(val)
+	if !ok {
+		return fmt.Errorf("tool %q exported %T, not a function", name, val.Export())
 	}
+	r.tools[name] = toolDef{Name: name, fn: fn}
+	return nil
 }
 
 var identRe = regexp.MustCompile(`[^a-zA-Z0-9_]`)
@@ -303,15 +316,25 @@ func (a *Agent) Execute(act action) string {
 			break
 		}
 		a.js.mu.Lock()
-		a.js.evalToolLocked(name, act.Code)
+		evalErr := a.js.evalToolLocked(name, act.Code)
+		if evalErr != nil {
+			// keep the runtime honest: a broken file must not leave an older
+			// in-memory implementation callable until the next restart
+			delete(a.js.tools, name)
+		}
 		a.js.mu.Unlock()
+		if evalErr != nil {
+			res["ok"], res["error"] = false, evalErr.Error()
+			res["hash"], res["changed"] = hash, changed
+			break
+		}
 		if changed {
 			a.commit("tool", name, path, act.Desc)
 		}
 		res["ok"] = true
 		res["hash"], res["changed"] = hash, changed
 		note := "tool compiled into the sandbox and callable via run_tool"
-currentManifest := readToolManifest(a, name)
+		currentManifest := readToolManifest(a, name)
 		manifestChanged := len(act.Schema) > 0 && (currentManifest == nil || currentManifest.Description != act.Desc || !sameSchema(currentManifest.Schema, act.Schema))
 		if manifestChanged {
 			// typed contract: persisted manifest, versioned, run_tool now validates
@@ -438,11 +461,24 @@ currentManifest := readToolManifest(a, name)
 			res["ok"], res["error"] = false, err.Error()
 			break
 		}
-		// hot-load into its own sandbox; the plugin is ALIVE the moment this returns
+		// hot-load into its own sandbox; the plugin is ALIVE the moment this
+		// returns. Re-evolving a plugin retires every older sandbox with the
+		// same name first, so stale timers cannot keep firing.
 		a.js.mu.Lock()
 		p, err := a.js.buildPluginVM(name, act.Code, act.Perms)
 		if err == nil {
-			a.js.vms = append(a.js.vms, p)
+			kept := a.js.vms[:0]
+			replaced := 0
+			for _, old := range a.js.vms {
+				if old.name == name {
+					old.Stop()
+					replaced++
+					continue
+				}
+				kept = append(kept, old)
+			}
+			a.js.vms = append(kept, p)
+			res["replaced"] = replaced
 		}
 		a.js.mu.Unlock()
 		if err != nil {
@@ -629,7 +665,7 @@ currentManifest := readToolManifest(a, name)
 		}
 		abs, err := filepath.Abs(target)
 		if err != nil || !dirExists(abs) {
-			res["ok"], res["error"] = false, "directory does not exist: " + target
+			res["ok"], res["error"] = false, "directory does not exist: "+target
 			break
 		}
 
@@ -667,8 +703,16 @@ currentManifest := readToolManifest(a, name)
 		}
 
 	case "delete_file":
+		if strings.TrimSpace(act.Path) == "" {
+			res["ok"], res["error"] = false, "delete_file needs an explicit path (refusing to delete the organism root)"
+			break
+		}
 		p, ok := a.resolvePath(act.Path, &res)
 		if !ok {
+			break
+		}
+		if reason := a.protectedPathReason(p); reason != "" {
+			res["ok"], res["error"] = false, reason
 			break
 		}
 		if err := os.RemoveAll(p); err != nil {
@@ -679,8 +723,20 @@ currentManifest := readToolManifest(a, name)
 		}
 
 	case "move":
-		from, ok := a.resolvePath(act.Path, &res)
+		fromRaw := strings.TrimSpace(act.From)
+		if fromRaw == "" {
+			fromRaw = strings.TrimSpace(act.Path) // legacy shape: {path, to}
+		}
+		if fromRaw == "" || strings.TrimSpace(act.To) == "" {
+			res["ok"], res["error"] = false, "move needs explicit from + to paths"
+			break
+		}
+		from, ok := a.resolvePath(fromRaw, &res)
 		if !ok {
+			break
+		}
+		if reason := a.protectedPathReason(from); reason != "" {
+			res["ok"], res["error"] = false, reason
 			break
 		}
 		to, ok := a.resolvePath(act.To, &res)
@@ -694,8 +750,8 @@ currentManifest := readToolManifest(a, name)
 		if err := os.Rename(from, to); err != nil {
 			res["ok"], res["error"] = false, err.Error()
 		} else {
-			a.commit("move", act.Path, to, "moved")
-			res["ok"] = true
+			a.commit("move", fromRaw, to, "moved")
+			res["ok"], res["from"], res["to"] = true, from, to
 		}
 
 	case "snapshot":
@@ -871,9 +927,23 @@ currentManifest := readToolManifest(a, name)
 			confidence = "high"
 		}
 
-		files := act.FilesList
-		if files == nil {
-			files = []string{}
+		// files accepts either a list of paths ("files":["a.go"]) or the
+		// staged-mutation shape ("files":[{"path":"a.go",...}]). Models emit
+		// both; the parser above normalizes them into one list.
+		files := make([]string, 0, len(act.FilesList)+len(act.Files))
+		seenFiles := map[string]bool{}
+		addFile := func(p string) {
+			p = strings.TrimSpace(p)
+			if p != "" && !seenFiles[p] {
+				seenFiles[p] = true
+				files = append(files, p)
+			}
+		}
+		for _, p := range act.FilesList {
+			addFile(p)
+		}
+		for _, fm := range act.Files {
+			addFile(fm.Path)
 		}
 
 		// When task succeeded, complete any remaining active steps in plan.json
@@ -948,7 +1018,7 @@ currentManifest := readToolManifest(a, name)
 			SourceRoot:     act.SourceRoot,
 			TargetLauncher: act.TargetLauncher,
 			TestPkg:        act.TestPkg,
-			Files:          act.Files,
+			Files:          []fileMutation(act.Files),
 		}
 		if act.RunTests != nil {
 			opt.RunTests = *act.RunTests
@@ -1098,6 +1168,15 @@ currentManifest := readToolManifest(a, name)
 		res["ok"], res["candidates"] = true, items
 
 	case "promote_candidate":
+		confirmed := act.Confirm
+		if raw, ok := act.Args["confirm"].(bool); ok && raw {
+			confirmed = true
+		}
+		if !confirmed {
+			res["ok"] = false
+			res["error"] = "promote_candidate requires explicit user approval — ask the user, then retry with confirm:true"
+			break
+		}
 		man, err := a.candidateManager().Promote(act.Name)
 		if err != nil {
 			res["ok"], res["error"] = false, err.Error()
@@ -1137,9 +1216,11 @@ func (a *Agent) commit(kind, name, path, desc string) {
 	a.bus.Publish("evolution", entry)
 }
 
+var unsafeNameRe = regexp.MustCompile(`[^a-z0-9_-]+`)
+
 func sanitizeName(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
-	s = regexp.MustCompile(`[^a-z0-9_-]+`).ReplaceAllString(s, "-")
+	s = unsafeNameRe.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-")
 	if len(s) > 40 {
 		s = s[:40]
@@ -1151,6 +1232,33 @@ func sanitizeName(s string) string {
 func dirExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && info.IsDir()
+}
+
+// protectedPathReason refuses the handful of paths whose deletion or move
+// would destroy the organism or the user's account in one call. Everything
+// below them remains fair game — this is a guard rail, not a sandbox.
+func (a *Agent) protectedPathReason(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "refusing to touch an unresolvable path: " + err.Error()
+	}
+	target := filepath.Clean(abs)
+	candidates := []string{a.ws.Root, workspace.DetectSourceRoot(), workspace.LauncherPath()}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, home)
+	}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		if ca, err := filepath.Abs(c); err == nil && filepath.Clean(ca) == target {
+			return "refusing to delete or move protected path " + target + " (organism root, source root, launcher, or home)"
+		}
+	}
+	if filepath.Dir(target) == target {
+		return "refusing to delete or move a filesystem root: " + target
+	}
+	return ""
 }
 
 // resolvePath turns an action path into an absolute path. Empty paths resolve

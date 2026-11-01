@@ -1,5 +1,5 @@
 # EVOLV — build the organism
-.PHONY: build install run release cross clean
+.PHONY: build install run release cross clean test vet fmt check
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "0.1.0")
 
@@ -11,6 +11,21 @@ run: build
 
 install: build
 	install -m 0755 evolv $(HOME)/.local/bin/evolv
+
+# the same gate CI runs: format, vet, tests
+test:
+	go test ./... -count=1
+
+vet:
+	go vet ./...
+
+fmt:
+	gofmt -w $$(git ls-files '*.go')
+
+check:
+	@test -z "$$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
+	go vet ./...
+	go test ./... -count=1
 
 # cross-compile all release targets (CGO-free: pure Go + goja)
 cross:

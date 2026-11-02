@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,6 +55,9 @@ type Server struct {
 	errors      atomic.Int64
 	wsMu        sync.Mutex
 	conns       map[*websocket.Conn]struct{}
+	done        chan struct{}
+	closeOnce   sync.Once
+	latency     latencyHistogram
 }
 
 // New builds the server.
@@ -61,8 +66,9 @@ func New(ws *workspace.W, b *bus.Bus, ag *agent.Agent, reg *providers.Registry) 
 		ws: ws, bus: b, ag: ag, reg: reg, mux: http.NewServeMux(), agents: map[string]*agent.Agent{}, profiles: map[string]agent.Profile{}, activeAgent: "main",
 		startedAt: time.Now(),
 		conns:     map[*websocket.Conn]struct{}{},
+		done:      make(chan struct{}),
 		upgr: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true }, // localhost organism
+			CheckOrigin: allowedOrigin, // same-origin browser sockets only
 		},
 	}
 	s.loadAgentProfiles()
@@ -74,6 +80,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.handleUI)
 	s.mux.HandleFunc("/ws", s.handleWS)
 	s.mux.HandleFunc("/api/chat", s.handleChat)
+	s.mux.HandleFunc("/api/history", s.handleHistory)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/models", s.handleModels)
 	s.mux.HandleFunc("/api/evolution", s.handleEvolution)
@@ -117,6 +124,7 @@ func (s *Server) Handler() http.Handler { return s.withMiddleware(s.mux) }
 // Close retires live WebSocket sessions and cancels an in-flight generation.
 // HTTP shutdown itself is owned by the caller so it can drain requests.
 func (s *Server) Close() {
+	s.closeOnce.Do(func() { close(s.done) })
 	s.wsMu.Lock()
 	for conn := range s.conns {
 		_ = conn.Close()
@@ -192,11 +200,25 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 
 // ---------- WebSocket hub ----------
 
+// WebSocket house rules: a browser may send small control frames, never a
+// multi-megabyte payload; a dead tab is reaped by ping/pong deadlines; a slow
+// consumer cannot block the bus because writes have their own deadline.
+const (
+	wsMaxMessage  = 64 << 10
+	wsReadWindow  = 90 * time.Second
+	wsWriteWindow = 10 * time.Second
+)
+
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgr.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[ws] upgrade failed: %v", err)
 		return
+	}
+	conn.SetReadLimit(wsMaxMessage)
+	writeJSON := func(v any) error {
+		_ = conn.SetWriteDeadline(time.Now().Add(wsWriteWindow))
+		return conn.WriteJSON(v)
 	}
 	log.Printf("[ws] client connected (%d live)", s.liveCount(1))
 	s.wsMu.Lock()
@@ -214,7 +236,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	defer s.bus.Unsubscribe(sub)
 
 	for _, ev := range replay {
-		if err := conn.WriteJSON(ev); err != nil {
+		if err := writeJSON(ev); err != nil {
 			return
 		}
 	}
@@ -224,16 +246,22 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			"agent":      map[string]any{"model": model, "provider": provider},
 			"evolutions": s.ag.EvolutionCount(),
 		}); err == nil {
-			_ = conn.WriteJSON(bus.Event{Type: "hello", Payload: raw, Time: time.Now().UTC().Format(time.RFC3339Nano)})
+			_ = writeJSON(bus.Event{Type: "hello", Payload: raw, Time: time.Now().UTC().Format(time.RFC3339Nano)})
 		}
 	}
 
-	// reader: pings keepalive; writer: events
+	// reader: ping/pong liveness. Browsers answer pings automatically; a
+	// client that goes silent for wsReadWindow is disconnected.
+	_ = conn.SetReadDeadline(time.Now().Add(wsReadWindow))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsReadWindow))
+	})
 	go func() {
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				return
 			}
+			_ = conn.SetReadDeadline(time.Now().Add(wsReadWindow))
 		}
 	}()
 	ticker := time.NewTicker(20 * time.Second)
@@ -241,13 +269,16 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case ev := <-sub.Events():
-			if err := conn.WriteJSON(ev); err != nil {
+			if err := writeJSON(ev); err != nil {
 				return
 			}
 		case <-ticker.C:
+			_ = conn.SetWriteDeadline(time.Now().Add(wsWriteWindow))
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
+		case <-s.done:
+			return
 		case <-sub.Closed():
 			return
 		}
@@ -306,6 +337,43 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	target := s.agentFor(r.URL.Query().Get("agent"))
+	if target == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "agent runtime unavailable")
+		return
+	}
+	limit, offset := 50, 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 200 {
+			writeJSONError(w, http.StatusBadRequest, "limit must be 1..200")
+			return
+		}
+		limit = n
+	}
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			writeJSONError(w, http.StatusBadRequest, "offset must be >= 0")
+			return
+		}
+		offset = n
+	}
+	messages, total := target.HistoryPage(limit, offset)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]any{
+		"messages": messages,
+		"total":    total,
+		"limit":    limit,
+		"offset":   offset,
+	})
 }
 
 func (s *Server) agentFor(id string) *agent.Agent {
@@ -1160,9 +1228,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	provider, model, agentID, evolutions := "unknown", "", "unavailable", 0
+	var stats agent.AgentStats
+	tools, plugins, components := 0, 0, 0
 	if s.ag != nil {
 		provider, model = s.ag.ProviderModel()
 		agentID, evolutions = s.ag.ProfileID(), s.ag.EvolutionCount()
+		stats = s.ag.Stats()
+		tools, plugins, components = s.ag.ToolCount(), s.ag.PluginCount(), s.ag.ComponentCount()
 	}
 	agents := 0
 	s.agentMu.RLock()
@@ -1171,22 +1243,35 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if s.ag != nil {
 		agents++
 	}
+	busSubs, busDropped := 0, uint64(0)
+	if s.bus != nil {
+		busSubs, busDropped = s.bus.SubscriberCount(), s.bus.Dropped()
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(map[string]any{
-		"status":           "alive",
-		"version":          workspace.Version,
-		"uptime_seconds":   int64(time.Since(s.startedAt).Seconds()),
-		"started_at":       s.startedAt.UTC().Format(time.RFC3339),
-		"provider":         provider,
-		"model":            model,
-		"agent":            agentID,
-		"agents":           agents,
-		"evolutions":       evolutions,
-		"live_connections": s.liveCount(0),
-		"requests":         s.requests.Load(),
-		"errors":           s.errors.Load(),
-		"snapshots":        len(s.ws.ListSnapshots()),
+		"status":                "alive",
+		"version":               workspace.Version,
+		"uptime_seconds":        int64(time.Since(s.startedAt).Seconds()),
+		"started_at":            s.startedAt.UTC().Format(time.RFC3339),
+		"provider":              provider,
+		"model":                 model,
+		"agent":                 agentID,
+		"agents":                agents,
+		"tools":                 tools,
+		"plugins":               plugins,
+		"components":            components,
+		"evolutions":            evolutions,
+		"model_calls":           stats.ModelCalls,
+		"model_errors":          stats.ModelErrors,
+		"last_model_latency_ms": stats.LastModelLatencyMS,
+		"live_connections":      s.liveCount(0),
+		"bus_subscribers":       busSubs,
+		"bus_dropped":           busDropped,
+		"goroutines":            runtime.NumGoroutine(),
+		"requests":              s.requests.Load(),
+		"errors":                s.errors.Load(),
+		"snapshots":             len(s.ws.ListSnapshots()),
 	})
 }
 
@@ -1202,8 +1287,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
 	evolutions := 0
+	var stats agent.AgentStats
+	tools, plugins, components := 0, 0, 0
 	if s.ag != nil {
 		evolutions = s.ag.EvolutionCount()
+		stats = s.ag.Stats()
+		tools, plugins, components = s.ag.ToolCount(), s.ag.PluginCount(), s.ag.ComponentCount()
 	}
 	agents := 0
 	s.agentMu.RLock()
@@ -1211,6 +1300,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	s.agentMu.RUnlock()
 	if s.ag != nil {
 		agents++
+	}
+	busSubs, busDropped := 0, uint64(0)
+	if s.bus != nil {
+		busSubs, busDropped = s.bus.SubscriberCount(), s.bus.Dropped()
 	}
 
 	fmt.Fprintf(w, "# HELP evolv_up 1 while the organism is serving.\n")
@@ -1229,6 +1322,25 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# TYPE evolv_evolutions_total counter\nevolv_evolutions_total %d\n", evolutions)
 	fmt.Fprintf(w, "# HELP evolv_snapshots Genome snapshots available.\n")
 	fmt.Fprintf(w, "# TYPE evolv_snapshots gauge\nevolv_snapshots %d\n", len(s.ws.ListSnapshots()))
+	fmt.Fprintf(w, "# HELP evolv_model_calls_total Model stream calls made by the active agent.\n")
+	fmt.Fprintf(w, "# TYPE evolv_model_calls_total counter\nevolv_model_calls_total %d\n", stats.ModelCalls)
+	fmt.Fprintf(w, "# HELP evolv_model_errors_total Model stream calls that returned an error.\n")
+	fmt.Fprintf(w, "# TYPE evolv_model_errors_total counter\nevolv_model_errors_total %d\n", stats.ModelErrors)
+	fmt.Fprintf(w, "# HELP evolv_model_last_latency_ms Last model call latency in milliseconds.\n")
+	fmt.Fprintf(w, "# TYPE evolv_model_last_latency_ms gauge\nevolv_model_last_latency_ms %d\n", stats.LastModelLatencyMS)
+	fmt.Fprintf(w, "# HELP evolv_tools Grown tools available.\n")
+	fmt.Fprintf(w, "# TYPE evolv_tools gauge\nevolv_tools %d\n", tools)
+	fmt.Fprintf(w, "# HELP evolv_plugins Live plugins.\n")
+	fmt.Fprintf(w, "# TYPE evolv_plugins gauge\nevolv_plugins %d\n", plugins)
+	fmt.Fprintf(w, "# HELP evolv_components Mounted UI components.\n")
+	fmt.Fprintf(w, "# TYPE evolv_components gauge\nevolv_components %d\n", components)
+	fmt.Fprintf(w, "# HELP evolv_bus_subscribers Active bus subscribers.\n")
+	fmt.Fprintf(w, "# TYPE evolv_bus_subscribers gauge\nevolv_bus_subscribers %d\n", busSubs)
+	fmt.Fprintf(w, "# HELP evolv_bus_dropped_total Events dropped for slow subscribers.\n")
+	fmt.Fprintf(w, "# TYPE evolv_bus_dropped_total counter\nevolv_bus_dropped_total %d\n", busDropped)
+	fmt.Fprintf(w, "# HELP evolv_goroutines Go runtime goroutines.\n")
+	fmt.Fprintf(w, "# TYPE evolv_goroutines gauge\nevolv_goroutines %d\n", runtime.NumGoroutine())
+	s.latency.writePrometheus(w, "evolv_http_request_duration_seconds")
 }
 
 // WatchReleases polls GitHub for newer releases and pushes a live banner to

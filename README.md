@@ -300,7 +300,8 @@ Skills are yours too: add a `.md` under `~/.evolv/workspace/skills/` (optional Y
 - **goja** (pure-Go JS interpreter) executes the tools/plugins the agent writes — no cgo, cross-compiles to every platform
 - **150ms filesystem watcher** + WebSocket fan-out = "did it just…? yes it did"
 - **Per-plugin goja sandboxes** with a live event bus (`evolv.on` / `evolv.every`) — plugins react while the organism thinks
-- **Operational surface** — `GET /api/health` reports uptime, provider/model, request/error counts, live sockets and snapshots; `GET /api/metrics` exposes the same counters in Prometheus format
+- **Operational surface** — `GET /api/health` reports uptime, provider/model, model calls/errors/latency, request/error counts, live sockets and snapshots; `GET /api/metrics` exposes counters plus a request-latency histogram in Prometheus format; `GET /api/history?limit=&offset=` pages the active transcript
+- **Local-only guards** — loopback Host validation, same-origin Origin checks for HTTP and WebSocket, token-bucket rate limits, 64 KiB WebSocket frames and ping/pong read deadlines
 - **Shutdown that behaves** — HTTP header/read/idle timeouts, bounded request bodies, panic recovery, and a SIGTERM drain that closes live sockets before exiting
 - Everything local. Nothing phones home except the model provider you choose.
 

@@ -6,6 +6,7 @@ package bus
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,11 +28,12 @@ type Subscriber struct {
 
 // Bus is a broadcast hub. Safe for concurrent use.
 type Bus struct {
-	mu     sync.RWMutex
-	subs   map[uint64]*Subscriber
-	nextID uint64
-	seq    uint64
-	last   []Event // replay ring for late joiners
+	mu      sync.RWMutex
+	subs    map[uint64]*Subscriber
+	nextID  uint64
+	seq     uint64
+	last    []Event // replay ring for late joiners
+	dropped atomic.Uint64
 }
 
 const replayLen = 128
@@ -89,6 +91,7 @@ func (b *Bus) Publish(eventType string, payload any) Event {
 			select {
 			case s.ch <- ev:
 			default: // slow consumer: drop rather than stall the organism
+				b.dropped.Add(1)
 			}
 		}
 	}
@@ -100,3 +103,14 @@ func (s *Subscriber) Events() <-chan Event { return s.ch }
 
 // Closed signals subscription shutdown.
 func (s *Subscriber) Closed() <-chan struct{} { return s.closed }
+
+// Dropped reports events that could not be delivered because a subscriber's
+// queue was full. Non-zero means a browser/plugin is falling behind.
+func (b *Bus) Dropped() uint64 { return b.dropped.Load() }
+
+// SubscriberCount reports connected subscribers (WebSocket clients, plugins).
+func (b *Bus) SubscriberCount() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.subs)
+}

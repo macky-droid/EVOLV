@@ -106,7 +106,9 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 				s.errors.Add(1)
 			}
 			s.requests.Add(1)
-			log.Printf("[http] %s %s %d %dB %dms id=%s", r.Method, r.URL.Path, status, rec.bytes, time.Since(start).Milliseconds(), id)
+			elapsed := time.Since(start)
+			s.latency.observe(elapsed)
+			log.Printf("[http] %s %s %d %dB %dms id=%s", r.Method, r.URL.Path, status, rec.bytes, elapsed.Milliseconds(), id)
 		}()
 
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && strings.HasPrefix(r.URL.Path, "/api/") {

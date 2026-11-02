@@ -35,6 +35,10 @@ type Agent struct {
 	maxLoops  int
 	profile   *Profile
 
+	modelCalls         atomic.Int64
+	modelErrors        atomic.Int64
+	lastModelLatencyMS atomic.Int64
+
 	lastAct      time.Time // last real user activity (drives dreaming)
 	dreaming     bool
 	dreamStop    chan struct{}
@@ -133,17 +137,63 @@ func (a *Agent) Reset() {
 // EvolutionCount returns how many mutations have happened.
 func (a *Agent) EvolutionCount() int { return int(a.evolution.Load()) }
 
+// AgentStats is a cheap, lock-free snapshot of model activity for health and
+// metrics surfaces.
+type AgentStats struct {
+	ModelCalls         int64 `json:"model_calls"`
+	ModelErrors        int64 `json:"model_errors"`
+	LastModelLatencyMS int64 `json:"last_model_latency_ms"`
+}
+
+func (a *Agent) Stats() AgentStats {
+	return AgentStats{
+		ModelCalls:         a.modelCalls.Load(),
+		ModelErrors:        a.modelErrors.Load(),
+		LastModelLatencyMS: a.lastModelLatencyMS.Load(),
+	}
+}
+
 // ReloadGrownCode re-reads tools and plugins from the genome (after rollback).
 func (a *Agent) ReloadGrownCode() { a.js.LoadAll() }
 
 // PluginNames lists the live plugins.
 func (a *Agent) PluginNames() []string { return a.js.PluginNames() }
 
+// ToolCount, PluginCount and ComponentCount are cheap status snapshots for
+// health/metrics surfaces.
+func (a *Agent) ToolCount() int      { return len(a.js.ListTools()) }
+func (a *Agent) PluginCount() int    { return len(a.js.PluginNames()) }
+func (a *Agent) ComponentCount() int { return len(a.ListComponents()) }
+
 // HistoryLen returns conversation length.
 func (a *Agent) HistoryLen() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return len(a.history)
+}
+
+// HistoryPage returns a copy of a bounded transcript slice plus the total
+// length. Copies matter: callers serialize while a chat turn may append.
+func (a *Agent) HistoryPage(limit, offset int) ([]providers.Message, int) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	total := len(a.history)
+	if offset >= total {
+		return []providers.Message{}, total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	out := make([]providers.Message, end-offset)
+	copy(out, a.history[offset:end])
+	return out, total
 }
 
 // ---------- the evolv-block protocol ----------
@@ -400,13 +450,23 @@ func (a *Agent) Chat(ctx context.Context, userMsg string) string {
 				a.bus.Publish("agent:reasoning", map[string]string{"text": d.Reasoning})
 			}
 		}
-		text, err := prov.Stream(ctx, model, msgs, stream)
+		callModel := func() (string, error) {
+			started := time.Now()
+			text, err := prov.Stream(ctx, model, msgs, stream)
+			a.modelCalls.Add(1)
+			a.lastModelLatencyMS.Store(time.Since(started).Milliseconds())
+			if err != nil {
+				a.modelErrors.Add(1)
+			}
+			return text, err
+		}
+		text, err := callModel()
 		if err != nil && ctx.Err() == nil {
 			// free anonymous gateways hiccup constantly; one quiet
 			// retry before surfacing the error to the user
 			a.bus.Publish("agent:token", map[string]string{"text": "…\n\n"})
 			time.Sleep(1500 * time.Millisecond)
-			text, err = prov.Stream(ctx, model, msgs, stream)
+			text, err = callModel()
 		}
 		if err != nil {
 			errMsg := fmt.Sprintf("\n\n⚠️ **model error**: `%s`\n\nTry another model in Settings — free anonymous models rotate often.", err.Error())

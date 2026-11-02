@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ func TestHealthAndMetrics(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &health); err != nil {
 		t.Fatalf("health json: %v", err)
 	}
-	for _, key := range []string{"status", "version", "uptime_seconds", "provider", "model", "agent", "agents", "live_connections", "requests", "errors", "snapshots"} {
+	for _, key := range []string{"status", "version", "uptime_seconds", "provider", "model", "agent", "agents", "tools", "plugins", "components", "model_calls", "model_errors", "last_model_latency_ms", "live_connections", "bus_subscribers", "bus_dropped", "goroutines", "requests", "errors", "snapshots"} {
 		if _, ok := health[key]; !ok {
 			t.Fatalf("health missing %q: %v", key, health)
 		}
@@ -42,7 +43,7 @@ func TestHealthAndMetrics(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
 		t.Fatalf("metrics content-type = %q", got)
 	}
-	for _, want := range []string{"evolv_up 1", "evolv_http_requests_total", "evolv_ws_connections", "evolv_uptime_seconds"} {
+	for _, want := range []string{"evolv_up 1", "evolv_http_requests_total", "evolv_ws_connections", "evolv_uptime_seconds", "evolv_http_request_duration_seconds_bucket", "evolv_model_calls_total", "evolv_tools", "evolv_bus_subscribers", "evolv_goroutines"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("metrics missing %q:\n%s", want, rec.Body.String())
 		}
@@ -146,5 +147,43 @@ func TestChatRejectsConcurrentGeneration(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "already running") {
 		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestHistoryPagination(t *testing.T) {
+	s, _ := newAgentServer(t)
+	_ = s.ag.Chat(context.Background(), "hello")
+
+	get := func(query string) (*httptest.ResponseRecorder, map[string]any) {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/history"+query, nil))
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec, out
+	}
+
+	rec, out := get("?limit=1&offset=0")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history -> %d: %s", rec.Code, rec.Body.String())
+	}
+	if out["total"] != float64(2) || out["limit"] != float64(1) || out["offset"] != float64(0) {
+		t.Fatalf("bad history meta: %v", out)
+	}
+	msgs := out["messages"].([]any)
+	if len(msgs) != 1 || msgs[0].(map[string]any)["role"] != "user" {
+		t.Fatalf("bad first page: %v", msgs)
+	}
+
+	_, out = get("?limit=1&offset=1")
+	msgs = out["messages"].([]any)
+	if len(msgs) != 1 || msgs[0].(map[string]any)["role"] != "assistant" {
+		t.Fatalf("bad second page: %v", msgs)
+	}
+
+	for _, bad := range []string{"?limit=0", "?limit=201", "?limit=x", "?offset=-1"} {
+		rec, _ := get(bad)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s -> %d, want 400", bad, rec.Code)
+		}
 	}
 }

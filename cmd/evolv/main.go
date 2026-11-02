@@ -259,7 +259,7 @@ func main() {
 	}
 
 	httpSrv := &http.Server{
-		Handler:           srv.Handler(),
+		Handler:           server.LocalOnly(srv.Handler()),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,

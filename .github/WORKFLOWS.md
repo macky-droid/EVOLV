@@ -8,7 +8,7 @@ a human approval or an unbounded loop.
 
 | Workflow | Trigger | Purpose | Max runtime |
 |---|---|---|---|
-| `ci.yml` | push `main`, PR, merge group, manual | format, tidy, docs freshness, tests + coverage, real-server smoke, race, Go compat, cross-build, workflow/shell lint | 20 min/job |
+| `ci.yml` | push `main`, PR, merge group, manual | format, tidy, docs freshness, tests + coverage, real-server smoke on Linux + macOS, race, Go compat, cross-build, workflow/shell lint | 20 min/job |
 | `release.yml` | `v*` tag, manual | validate, build 6 targets in parallel, smoke-test the binary, checksum, attest provenance, publish | 20 min/job |
 | `nightly.yml` | daily 03:17 UTC, manual | repeated shuffled tests (`-count=3`), full race detector, cross-build | 35 min/job |
 | `codeql.yml` | push `main`, weekly, manual | CodeQL static analysis for Go | 30 min |
@@ -55,7 +55,7 @@ Required-in-practice checks:
 
 1. `format / tidy / docs` — gofmt, `go mod tidy -diff`, generated docs current.
 2. `test / coverage` — full suite, shuffled, coverage artifact.
-3. `boot / api smoke` — build the binary, boot it on a temp home, probe health, metrics and the UI.
+3. `boot / api smoke` — build the binary, boot it on a temp home on Linux and macOS, probe health/metrics/UI, reject evil Origins/Hosts, and assert clean SIGTERM drain.
 4. `race detector` — full module with `-race`.
 5. `go 1.26.x` and `go stable` — compatibility.
 6. `cross-build` — all six release targets.

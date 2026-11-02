@@ -94,9 +94,13 @@ jobs:
           git status --short
 
   smoke:
-    name: boot / api smoke
-    runs-on: ubuntu-latest
+    name: boot / api smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-go
@@ -125,8 +129,21 @@ jobs:
           echo "$health"
           echo "$health" | grep -q '"status":"alive"'
           curl -fsS http://127.0.0.1:17391/api/metrics | grep -q '^evolv_up 1$'
+          curl -fsS 'http://127.0.0.1:17391/api/history?limit=1' | grep -q '"total":0'
           curl -fsS http://127.0.0.1:17391/ | grep -qi '<!doctype html>'
           curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:17391/api/health | grep -q '^200$'
+
+          # Cross-origin state-changing requests and DNS-rebinding Host
+          # headers must be rejected before any handler runs.
+          code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Origin: https://evil.example' \
+            -H 'Content-Type: application/json' \
+            -d '{"message":"should-not-run"}' \
+            http://127.0.0.1:17391/api/chat)"
+          test "$code" = "403"
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' \
+            http://127.0.0.1:17391/api/health)"
+          test "$code" = "421"
 
           # SIGTERM must drain and exit cleanly, not hang or die on a signal.
           kill -TERM "$pid"

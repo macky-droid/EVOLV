@@ -36,31 +36,32 @@ import (
 
 // Server is the organism's interface to the world.
 type Server struct {
-	ws          *workspace.W
-	bus         *bus.Bus
-	ag          *agent.Agent
-	reg         *providers.Registry
-	mux         *http.ServeMux
-	upgr        websocket.Upgrader
-	mu          sync.Mutex
-	live        int
-	update      *update.Info // newer release, if any
-	genMu       sync.Mutex
-	genCancel   context.CancelFunc // cancels the in-flight generation (stop button)
-	agentMu     sync.RWMutex
-	agents      map[string]*agent.Agent
-	profiles    map[string]agent.Profile
-	activeAgent string
-	startedAt   time.Time
-	requests    atomic.Int64
-	errors      atomic.Int64
-	wsMu        sync.Mutex
-	conns       map[*websocket.Conn]struct{}
-	swarm       *swarm.Engine
-	swarmMu     sync.Mutex
-	done        chan struct{}
-	closeOnce   sync.Once
-	latency     latencyHistogram
+	ws            *workspace.W
+	bus           *bus.Bus
+	ag            *agent.Agent
+	reg           *providers.Registry
+	mux           *http.ServeMux
+	upgr          websocket.Upgrader
+	mu            sync.Mutex
+	live          int
+	update        *update.Info // newer release, if any
+	genMu         sync.Mutex
+	genCancel     context.CancelFunc // cancels the in-flight generation (stop button)
+	agentMu       sync.RWMutex
+	agents        map[string]*agent.Agent
+	profiles      map[string]agent.Profile
+	activeAgent   string
+	startedAt     time.Time
+	requests      atomic.Int64
+	errors        atomic.Int64
+	wsMu          sync.Mutex
+	conns         map[*websocket.Conn]struct{}
+	swarm         *swarm.Engine
+	swarmMu       sync.Mutex
+	swarmArchived map[string]bool
+	done          chan struct{}
+	closeOnce     sync.Once
+	latency       latencyHistogram
 }
 
 // New builds the server.
@@ -74,6 +75,7 @@ func New(ws *workspace.W, b *bus.Bus, ag *agent.Agent, reg *providers.Registry) 
 			CheckOrigin: allowedOrigin, // same-origin browser sockets only
 		},
 	}
+	s.swarmArchived = map[string]bool{}
 	s.swarm = swarm.New(func() (providers.Provider, string) {
 		if s.ag == nil {
 			return nil, ""
@@ -97,6 +99,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/chat", s.handleChat)
 	s.mux.HandleFunc("/api/swarm", s.handleSwarm)
 	s.mux.HandleFunc("/api/swarm/stop", s.handleSwarmStop)
+	s.mux.HandleFunc("/api/swarm/runs", s.handleSwarmRuns)
+	s.mux.HandleFunc("/api/swarm/history", s.handleSwarmHistory)
 	s.mux.HandleFunc("/api/history", s.handleHistory)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/models", s.handleModels)
@@ -403,6 +407,10 @@ func (s *Server) swarmStatePath() string {
 	return filepath.Join(s.ws.Dir(workspace.WorkspaceDir), "swarm", "last.json")
 }
 
+func (s *Server) swarmRunsDir() string {
+	return filepath.Join(s.ws.Dir(workspace.WorkspaceDir), "swarm", "runs")
+}
+
 func (s *Server) saveSwarmState(st swarm.State) {
 	raw, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
@@ -419,6 +427,23 @@ func (s *Server) saveSwarmState(st swarm.State) {
 		return
 	}
 	_ = os.Rename(tmp, path)
+
+	// Archive each terminal run once, keyed by its id.
+	if st.ID == "" || s.swarmArchived[st.ID] {
+		return
+	}
+	if st.Status != "done" && st.Status != "stopped" && st.Status != "error" {
+		return
+	}
+	dir := s.swarmRunsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	runPath := filepath.Join(dir, st.ID+".json")
+	runTmp := runPath + ".tmp"
+	if os.WriteFile(runTmp, raw, 0o644) == nil && os.Rename(runTmp, runPath) == nil {
+		s.swarmArchived[st.ID] = true
+	}
 }
 
 func (s *Server) loadSwarmState() {
@@ -431,6 +456,75 @@ func (s *Server) loadSwarmState() {
 		return
 	}
 	s.swarm.Restore(st)
+}
+
+type swarmRunSummary struct {
+	ID        string `json:"id"`
+	Mission   string `json:"mission"`
+	Status    string `json:"status"`
+	Phase     string `json:"phase"`
+	Size      int    `json:"size"`
+	Calls     int    `json:"calls"`
+	ElapsedMS int64  `json:"elapsed_ms"`
+	Started   string `json:"started"`
+	Updated   string `json:"updated"`
+}
+
+func (s *Server) handleSwarmRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	entries, _ := os.ReadDir(s.swarmRunsDir())
+	runs := make([]swarmRunSummary, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(s.swarmRunsDir(), entry.Name()))
+		if err != nil {
+			continue
+		}
+		var st swarm.State
+		if json.Unmarshal(raw, &st) != nil || st.ID == "" {
+			continue
+		}
+		runs = append(runs, swarmRunSummary{
+			ID: st.ID, Mission: st.Mission, Status: st.Status, Phase: st.Phase,
+			Size: st.Size, Calls: st.Calls, ElapsedMS: st.ElapsedMS,
+			Started: st.Started, Updated: st.Updated,
+		})
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].Started > runs[j].Started })
+	if len(runs) > 30 {
+		runs = runs[:30]
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]any{"runs": runs})
+}
+
+func (s *Server) handleSwarmHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	id := filepath.Base(strings.TrimSpace(r.URL.Query().Get("id")))
+	if !strings.HasPrefix(id, "swarm-") || strings.ContainsAny(id, "/\\") {
+		writeJSONError(w, http.StatusBadRequest, "invalid run id")
+		return
+	}
+	raw, err := os.ReadFile(filepath.Join(s.swarmRunsDir(), id+".json"))
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	var st swarm.State
+	if json.Unmarshal(raw, &st) != nil || st.ID == "" {
+		writeJSONError(w, http.StatusInternalServerError, "run is unreadable")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(st)
 }
 
 func (s *Server) handleSwarm(w http.ResponseWriter, r *http.Request) {

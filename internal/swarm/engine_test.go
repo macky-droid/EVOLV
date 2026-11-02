@@ -109,6 +109,9 @@ func TestHundredAgentSwarm(t *testing.T) {
 	if len(final.Messages) < 20 {
 		t.Fatalf("transcript too small for 100 agents: %d", len(final.Messages))
 	}
+	if final.Calls == 0 || final.ElapsedMS == 0 {
+		t.Fatalf("run metadata missing: calls=%d elapsed=%d", final.Calls, final.ElapsedMS)
+	}
 }
 
 type reviseProvider struct{}

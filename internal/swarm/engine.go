@@ -100,6 +100,10 @@ type State struct {
 	Size      int          `json:"size"`
 	Phase     string       `json:"phase"`
 	Status    string       `json:"status"` // idle | running | done | stopped | error
+	Provider  string       `json:"provider,omitempty"`
+	Model     string       `json:"model,omitempty"`
+	Calls     int          `json:"calls,omitempty"`
+	ElapsedMS int64        `json:"elapsed_ms,omitempty"`
 	Started   string       `json:"started,omitempty"`
 	Updated   string       `json:"updated,omitempty"`
 	Error     string       `json:"error,omitempty"`
@@ -120,10 +124,12 @@ type Engine struct {
 	source  providerSource
 	publish publisher
 
-	state   State
-	running bool
-	cancel  context.CancelFunc
-	seq     int
+	state     State
+	running   bool
+	cancel    context.CancelFunc
+	seq       int
+	calls     int
+	startedAt time.Time
 
 	prov  providers.Provider
 	model string
@@ -232,6 +238,8 @@ func (e *Engine) Start(ctx context.Context, mission string, size int) (State, er
 	e.running = true
 	e.cancel = cancel
 	e.seq = 0
+	e.calls = 0
+	e.startedAt = time.Now()
 	e.mu.Unlock()
 	e.emit()
 
@@ -295,6 +303,11 @@ func (e *Engine) setStatus(status, phase string) {
 	e.state.Status = status
 	e.state.Phase = phase
 	e.state.Updated = now()
+	if status == "done" || status == "error" || status == "stopped" {
+		if !e.startedAt.IsZero() {
+			e.state.ElapsedMS = time.Since(e.startedAt).Milliseconds()
+		}
+	}
 	e.mu.Unlock()
 	e.emit()
 }
@@ -416,6 +429,9 @@ func (e *Engine) fail(ctx context.Context, err error) {
 		e.state.Phase = "error"
 		e.state.Error = err.Error()
 	}
+	if !e.startedAt.IsZero() {
+		e.state.ElapsedMS = time.Since(e.startedAt).Milliseconds()
+	}
 	e.state.Updated = now()
 	e.mu.Unlock()
 	e.emit()
@@ -432,8 +448,13 @@ func (e *Engine) run(ctx context.Context) {
 		model = "swarm-demo"
 		demo = true
 	}
+	providerName := prov.Name()
+	if demo {
+		providerName = "demo"
+	}
 	e.mu.Lock()
 	e.prov, e.model, e.demo = prov, model, demo
+	e.state.Provider, e.state.Model = providerName, model
 	e.mu.Unlock()
 
 	e.setPhase("ideating")
@@ -666,6 +687,10 @@ func (e *Engine) complete(ctx context.Context, role Role, user string) (string, 
 			e.activity(role.ID, clip(live.String(), 180))
 		}
 	})
+	e.mu.Lock()
+	e.calls++
+	e.state.Calls = e.calls
+	e.mu.Unlock()
 	e.activity(role.ID, "")
 	if err != nil {
 		return "", err

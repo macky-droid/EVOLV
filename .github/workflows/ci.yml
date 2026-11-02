@@ -143,6 +143,7 @@ jobs:
           curl -fsS http://127.0.0.1:17391/ | grep -qi '<!doctype html>'
           curl -fsS http://127.0.0.1:17391/swarm | grep -qi 'swarm mode'
           curl -fsS http://127.0.0.1:17391/api/swarm | grep -q '"agents"'
+          curl -fsS http://127.0.0.1:17391/api/swarm/runs | grep -q '"runs"'
           test -x /tmp/evolv-smoke
           /tmp/evolv-smoke --version | grep -q '^evolv '
           /tmp/evolv-smoke --help | grep -q 'evolv download'

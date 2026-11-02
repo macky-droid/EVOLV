@@ -112,6 +112,7 @@
   }
   .top h1 { font-family: var(--serif); font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
   .top p { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .run-meta { color: var(--faint); font: 500 9.5px/1 var(--mono); margin-left: 9px; letter-spacing: .02em; }
   .top .phase-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
   .top .phase-dot.busy { background: var(--accent); animation: blink 1s infinite; }
   .top-actions { display: flex; gap: 7px; align-items: center; }
@@ -129,6 +130,12 @@
   .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   .btn:disabled { opacity: .45; cursor: default; }
   .btn.primary { background: var(--ink); color: #fffdf9; border-color: var(--ink); padding: 9px 15px; font-weight: 600; }
+  .history-select {
+    max-width: 146px; border: 1px solid var(--line-strong); background: var(--panel);
+    color: var(--soft); border-radius: 8px; padding: 7px 6px;
+    font: 500 10px/1 var(--mono); outline: none; cursor: pointer;
+  }
+  .history-select:focus { border-color: var(--accent); }
   .btn.primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .thread { flex: 1; overflow: auto; padding: 10px 34px 28px; scroll-behavior: smooth; }
@@ -271,9 +278,12 @@
     <header class="top">
       <div>
         <h1>Swarm mode</h1>
-        <p><span class="phase-dot" id="phase-dot"></span><span id="phase">idle · many minds, one organism</span></p>
+        <p><span class="phase-dot" id="phase-dot"></span><span id="phase">idle · many minds, one organism</span><span class="run-meta" id="run-meta"></span></p>
       </div>
       <div class="top-actions">
+        <select class="history-select" id="history" aria-label="Run history">
+          <option value="">current run</option>
+        </select>
         <button class="btn" id="export" type="button">export</button>
         <button class="btn" id="stop" disabled>stop swarm</button>
       </div>
@@ -346,9 +356,11 @@
   const runBtn = $('#run');
   const sizeSelect = $('#size');
   const activityEl = $('#activity');
+  const runMeta = $('#run-meta');
   const activityText = $('#activity-text');
   const roleFilterEl = $('#role-filter');
   const exportBtn = $('#export');
+  const historySelect = $('#history');
   const input = $('#mission-input');
   const composer = $('#composer');
   const wsDot = $('#ws-dot');
@@ -358,6 +370,7 @@
   let running = false;
   let ws = null;
   let roleFilter = 'all';
+  let viewingHistory = false;
 
   const phaseLabels = {
     idle: 'idle · many minds, one organism',
@@ -412,6 +425,7 @@
     ws.onmessage = (event) => {
       try {
         const ev = JSON.parse(event.data);
+        if (viewingHistory) return;
         if (ev.type === 'swarm:state' && ev.payload) render(ev.payload);
         if (ev.type === 'swarm:activity' && ev.payload) showActivity(ev.payload);
       } catch {}
@@ -581,6 +595,12 @@
     missionEl.textContent = state.mission || 'No mission yet.';
     missionEl.classList.toggle('is-empty', !state.mission);
     phaseEl.textContent = phaseLabels[state.phase] || (state.phase + ' · ' + (state.status || ''));
+    const meta = [];
+    if (state.provider) meta.push(state.provider);
+    if (state.model) meta.push(state.model);
+    if (state.calls) meta.push(state.calls + ' calls');
+    if (state.elapsed_ms) meta.push((state.elapsed_ms / 1000).toFixed(1) + 's');
+    runMeta.textContent = meta.join(' · ');
     phaseDot.classList.toggle('busy', running);
     phaseDot.style.background = state.status === 'error' ? 'var(--danger)' : '';
     runBtn.disabled = running;
@@ -597,11 +617,49 @@
       errorEl.hidden = true;
       errorEl.textContent = '';
     }
+    if (!viewingHistory && state.status === 'done') {
+      setTimeout(loadHistoryRuns, 700);
+    }
     renderRoleFilter();
     renderAgents();
     renderMessages();
     renderPolls();
     renderArtifacts();
+  }
+
+  async function loadHistoryRuns() {
+    try {
+      const res = await fetch('/api/swarm/runs', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const current = historySelect.value;
+      historySelect.replaceChildren();
+      const live = el('option', null, 'current run');
+      live.value = '';
+      historySelect.append(live);
+      for (const run of (data.runs || [])) {
+        const label = (run.mission || run.id).replace(/\s+/g, ' ').slice(0, 30) + ' · ' + run.size + 'a';
+        const opt = el('option', null, label);
+        opt.value = run.id;
+        historySelect.append(opt);
+      }
+      if (current) historySelect.value = current;
+    } catch {}
+  }
+
+  async function loadHistoryRun(id) {
+    if (!id) {
+      viewingHistory = false;
+      historySelect.value = '';
+      await initial();
+      return;
+    }
+    try {
+      const res = await fetch('/api/swarm/history?id=' + encodeURIComponent(id), { cache: 'no-store' });
+      if (!res.ok) return;
+      viewingHistory = true;
+      render(await res.json());
+    } catch {}
   }
 
   function showActivity(payload) {
@@ -641,6 +699,8 @@
   }
 
   async function startSwarm(mission) {
+    viewingHistory = false;
+    historySelect.value = '';
     errorEl.hidden = true;
     runBtn.disabled = true;
     try {
@@ -695,6 +755,7 @@
   });
   stopBtn.addEventListener('click', stopSwarm);
   exportBtn.addEventListener('click', exportTranscript);
+  historySelect.addEventListener('change', () => loadHistoryRun(historySelect.value));
   for (const chip of document.querySelectorAll('[data-mission]')) {
     chip.addEventListener('click', () => {
       input.value = chip.dataset.mission;
@@ -705,6 +766,7 @@
 
   connect();
   initial();
+  loadHistoryRuns();
   autoGrow();
 })();
 </script>

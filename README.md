@@ -29,25 +29,7 @@ $ evolv          # boots on localhost:7373, opens your browser
 
 ---
 
-## EVOLV Genesis — The Living AI Workspace
-
-Genesis is the next layer of that vision: a workspace where agents don't just discuss, they **do**. Open **`/genesis`** and give it a mission. A supervisor decomposes the work into a task DAG, independent tasks run concurrently, builders write real files into an isolated run directory, and testers execute real commands. The run can only pass when a command exits zero and its evidence is recorded. The `/swarm` room stays as the discussion colony; Genesis is the execution workspace.
-
-### Genesis: tasks, files, evidence
-
-```text
-mission → supervisor → task DAG → parallel workers → real files → go test / pytest / npm test → verification gate → final
-```
-
-- **Dynamic roles**: Architect, Builder, Tester, Reviewer, Integrator (and the supervisor).
-- **Isolated workspace** per run under `workspace/swarm/exec/<id>/project/`.
-- **Real evidence**: tester commands are allow-listed and executed with a 90s timeout; stdout/stderr and exit code are stored on the task.
-- **No vote can override a failed gate**: a run with a failing or missing test command ends `blocked`, not `done`.
-- **Task-scoped context**: each agent receives only its dependencies' summaries and evidence, not the whole conversation.
-- **Live task board** over the existing WebSocket (`swarm:exec`, `swarm:exec:activity`, `swarm:exec:evidence`).
-- API: `POST /api/genesis`, `GET /api/genesis`, `POST /api/genesis/stop`.
-
-### What you just watched
+## What you just watched
 
 That GIF wasn't scripted. You're looking at an AI **rewriting its own application while it runs**:
 
@@ -162,7 +144,9 @@ Every dream is a real conversation turn, so the organism *remembers its dreams* 
 
 Open **`/swarm`** (the 🐝 button in the sidebar) to convene a colony of **5–100 agents** across five roles: **Ideators** propose directions, **Coders** build the chosen one, **Testers** try to break it, **Critics** argue with both, and **Judges** write the final decision. They share one transcript, work in phases, and settle decisions with explicit **polls** — every agent casts a vote with a reason. Votes are collected in one call per role cohort, so a 100-agent poll costs five model calls instead of a hundred.
 
-If the ship poll says **revise**, the coders apply the critique and the testers retest before the judge closes the run. The page streams live `swarm:activity`, `swarm:state` and poll bars over the existing WebSocket, filters the roster by role, exports the whole run as Markdown, and restores the last run from `workspace/swarm/last.json` after a restart. Terminal runs are archived under `workspace/swarm/runs/` and reopen from the run picker. `POST /api/swarm` starts a run (`agents` 5–100); `/api/swarm/stop` cancels it. Beta, and honest about it: artifacts are proposals until a tester actually runs them.
+If the ship poll says **revise**, the coders apply the critique and the testers retest before the judge closes the run. The page streams live `swarm:activity`, `swarm:state` and poll bars over the existing WebSocket, filters the roster by role, exports the whole run as Markdown, and restores the last run from `workspace/swarm/last.json` after a restart. Terminal runs are archived under `workspace/swarm/runs/` and reopen from the run picker.
+
+You are in the room too: **type while the colony is working to steer it**, and **click vote on an open poll** to add your own ballot. A live colony map and phase rail show where the 5–100 agents are. `POST /api/swarm` starts a run (`agents` 5–100); `POST /api/swarm/steer` adds a human message; `POST /api/swarm/vote` casts your vote; `/api/swarm/stop` cancels. Beta, and honest about it: artifacts are proposals until a tester actually runs them.
 
 ### The full action list
 

@@ -131,25 +131,16 @@ func TestSwarmRunHistory(t *testing.T) {
 	id := s.swarm.Snapshot().ID
 	time.Sleep(30 * time.Millisecond)
 
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/swarm/runs", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("runs -> %d", rec.Code)
+	}
 	var list struct {
 		Runs []swarmRunSummary `json:"runs"`
 	}
-	// Archiving happens in the state publish callback; wait for it instead of
-	// relying on a fixed sleep under the race detector.
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		rec = httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/swarm/runs", nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("runs -> %d", rec.Code)
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-			t.Fatal(err)
-		}
-		if len(list.Runs) > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
 	}
 	if len(list.Runs) == 0 || list.Runs[0].ID != id {
 		t.Fatalf("runs = %+v, want %s", list.Runs, id)
@@ -166,5 +157,39 @@ func TestSwarmRunHistory(t *testing.T) {
 	}
 	if st["id"] != id || st["status"] != "done" {
 		t.Fatalf("history state = %v", st)
+	}
+}
+
+func TestSwarmSteerEndpoint(t *testing.T) {
+	s, _ := newWbServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/swarm", strings.NewReader(`{"mission":"steer me","agents":5}`))
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start -> %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/swarm/steer", strings.NewReader(`{"message":"keep it keyboard-first"}`))
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("steer -> %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/swarm/stop", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stop -> %d", rec.Code)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && s.swarm.Snapshot().Status == "running" {
+		time.Sleep(10 * time.Millisecond)
+	}
+	found := false
+	for _, m := range s.swarm.Snapshot().Messages {
+		if m.Kind == "steer" && m.Agent == "human" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("human steer not persisted in transcript")
 	}
 }

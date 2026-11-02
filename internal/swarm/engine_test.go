@@ -204,3 +204,68 @@ func TestRevisionRoundRuns(t *testing.T) {
 		t.Fatal("revision artifact missing")
 	}
 }
+
+func TestHumanCanSteerAndVote(t *testing.T) {
+	e := New(nil, nil)
+	if _, err := e.Start(context.Background(), "design a tiny timer", 5); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var poll *Poll
+	for time.Now().Before(deadline) {
+		st := e.Snapshot()
+		if st.Poll != nil && st.Poll.Open {
+			p := *st.Poll
+			poll = &p
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if poll == nil {
+		t.Fatal("never saw an open poll")
+	}
+	if err := e.Vote(0); err != nil {
+		t.Fatalf("human vote: %v", err)
+	}
+	if err := e.Steer("make the timer keyboard-first"); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && e.Snapshot().Status == "running" {
+		time.Sleep(20 * time.Millisecond)
+	}
+	final := e.Snapshot()
+	if final.Status != "done" {
+		t.Fatalf("status = %s", final.Status)
+	}
+	foundSteer := false
+	for _, m := range final.Messages {
+		if m.Kind == "steer" && m.Agent == "human" {
+			foundSteer = true
+		}
+	}
+	if !foundSteer {
+		t.Fatal("human steer missing from transcript")
+	}
+	foundVote := false
+	for _, p := range final.Polls {
+		for _, v := range p.Votes {
+			if v.Voter == "human" && v.Choice == 0 {
+				foundVote = true
+			}
+		}
+	}
+	if !foundVote {
+		t.Fatal("human vote missing from poll history")
+	}
+}
+
+func TestSteerRequiresRunningSwarm(t *testing.T) {
+	e := New(nil, nil)
+	if err := e.Steer("hello"); err == nil {
+		t.Fatal("steer accepted while idle")
+	}
+	if err := e.Vote(0); err == nil {
+		t.Fatal("vote accepted while idle")
+	}
+}

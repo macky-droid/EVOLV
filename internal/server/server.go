@@ -30,7 +30,6 @@ import (
 	"github.com/dxn111/EVOLV/internal/candidate"
 	"github.com/dxn111/EVOLV/internal/providers"
 	"github.com/dxn111/EVOLV/internal/swarm"
-	execution "github.com/dxn111/EVOLV/internal/swarm/exec"
 	"github.com/dxn111/EVOLV/internal/update"
 	"github.com/dxn111/EVOLV/internal/workspace"
 )
@@ -58,7 +57,6 @@ type Server struct {
 	wsMu          sync.Mutex
 	conns         map[*websocket.Conn]struct{}
 	swarm         *swarm.Engine
-	execEngine    *execution.Engine
 	swarmMu       sync.Mutex
 	swarmArchived map[string]bool
 	done          chan struct{}
@@ -89,14 +87,6 @@ func New(ws *workspace.W, b *bus.Bus, ag *agent.Agent, reg *providers.Registry) 
 			s.saveSwarmState(state)
 		}
 	})
-	s.execEngine = execution.New(func() (providers.Provider, string) {
-		if s.ag == nil {
-			return nil, ""
-		}
-		return s.ag.ProviderSnapshot()
-	}, func(event string, payload any) {
-		s.bus.Publish(event, payload)
-	}, s.ws.Dir(workspace.WorkspaceDir))
 	s.loadSwarmState()
 	s.loadAgentProfiles()
 	s.routes()
@@ -109,10 +99,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/chat", s.handleChat)
 	s.mux.HandleFunc("/api/swarm", s.handleSwarm)
 	s.mux.HandleFunc("/api/swarm/stop", s.handleSwarmStop)
+	s.mux.HandleFunc("/api/swarm/steer", s.handleSwarmSteer)
+	s.mux.HandleFunc("/api/swarm/vote", s.handleSwarmVote)
 	s.mux.HandleFunc("/api/swarm/runs", s.handleSwarmRuns)
 	s.mux.HandleFunc("/api/swarm/history", s.handleSwarmHistory)
-	s.mux.HandleFunc("/api/genesis", s.handleGenesis)
-	s.mux.HandleFunc("/api/genesis/stop", s.handleGenesisStop)
 	s.mux.HandleFunc("/api/history", s.handleHistory)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/models", s.handleModels)
@@ -174,9 +164,6 @@ func (s *Server) Close() {
 	if s.swarm != nil {
 		s.swarm.Stop()
 	}
-	if s.execEngine != nil {
-		s.execEngine.Stop()
-	}
 }
 
 // liveCount tracks WS clients (delta +1/-1, returns new total).
@@ -205,9 +192,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/":
 		rel = workspace.UIRel() + "/index.html"
 	case r.URL.Path == "/swarm" || r.URL.Path == "/swarm/" || r.URL.Path == "/swarm.html":
-		rel = workspace.UIRel() + "/swarm.html" // discussion-mode colony room
-	case r.URL.Path == "/genesis" || r.URL.Path == "/genesis/" || r.URL.Path == "/genesis.html":
-		rel = workspace.UIRel() + "/genesis.html" // execution-mode living workspace
+		rel = workspace.UIRel() + "/swarm.html" // coming-soon preview, a real page not a modal
 	case strings.HasPrefix(r.URL.Path, "/ui/"):
 		rel = workspace.UIRel() + "/" + strings.TrimPrefix(r.URL.Path, "/ui/")
 	case r.URL.Path == "/style.css" || r.URL.Path == "/app.js":
@@ -544,52 +529,6 @@ func (s *Server) handleSwarmHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(st)
 }
 
-func (s *Server) handleGenesis(w http.ResponseWriter, r *http.Request) {
-	if s.execEngine == nil {
-		writeJSONError(w, http.StatusServiceUnavailable, "genesis runtime unavailable")
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		json.NewEncoder(w).Encode(s.execEngine.Snapshot())
-	case http.MethodPost:
-		var in struct {
-			Mission string `json:"mission"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.Mission) == "" {
-			writeJSONError(w, http.StatusBadRequest, "mission is required")
-			return
-		}
-		st, err := s.execEngine.Start(r.Context(), in.Mission)
-		if err != nil {
-			code := http.StatusBadRequest
-			if strings.Contains(err.Error(), "already active") {
-				code = http.StatusConflict
-			}
-			writeJSONError(w, code, err.Error())
-			return
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(st)
-	default:
-		http.Error(w, "GET or POST only", http.StatusMethodNotAllowed)
-	}
-}
-
-func (s *Server) handleGenesisStop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	if s.execEngine != nil {
-		s.execEngine.Stop()
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-}
-
 func (s *Server) handleSwarm(w http.ResponseWriter, r *http.Request) {
 	if s.swarm == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "swarm runtime unavailable")
@@ -625,6 +564,54 @@ func (s *Server) handleSwarm(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleSwarmSteer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.Message) == "" {
+		writeJSONError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+	if s.swarm == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "swarm runtime unavailable")
+		return
+	}
+	if err := s.swarm.Steer(in.Message); err != nil {
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
+func (s *Server) handleSwarmVote(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var in struct {
+		Choice int `json:"choice"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "choice is required")
+		return
+	}
+	if s.swarm == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "swarm runtime unavailable")
+		return
+	}
+	if err := s.swarm.Vote(in.Choice); err != nil {
+		writeJSONError(w, http.StatusConflict, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+}
+
 func (s *Server) handleSwarmStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -632,9 +619,6 @@ func (s *Server) handleSwarmStop(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.swarm != nil {
 		s.swarm.Stop()
-	}
-	if s.execEngine != nil {
-		s.execEngine.Stop()
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})

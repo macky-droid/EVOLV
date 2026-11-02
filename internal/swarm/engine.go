@@ -298,6 +298,56 @@ func (e *Engine) Restore(s State) {
 	e.mu.Unlock()
 }
 
+// Steer appends a human message to the live transcript. The next model call
+// sees it; there is no restart and no separate chat channel.
+func (e *Engine) Steer(text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Errorf("steer message is required")
+	}
+	e.mu.Lock()
+	if !e.running {
+		e.mu.Unlock()
+		return fmt.Errorf("no swarm is running")
+	}
+	e.seq++
+	e.state.Messages = append(e.state.Messages, Message{
+		ID: fmt.Sprintf("m%d", e.seq), Agent: "human", Role: "human", Kind: "steer", Text: text, Time: now(),
+	})
+	e.state.Updated = now()
+	e.mu.Unlock()
+	e.emit()
+	return nil
+}
+
+// Vote lets the human join the current open poll. A second human vote replaces
+// the first instead of stuffing the ballot.
+func (e *Engine) Vote(choice int) error {
+	e.mu.Lock()
+	if !e.running || e.state.Poll == nil || !e.state.Poll.Open {
+		e.mu.Unlock()
+		return fmt.Errorf("no open poll")
+	}
+	if choice < 0 || choice >= len(e.state.Poll.Options) {
+		e.mu.Unlock()
+		return fmt.Errorf("choice out of range")
+	}
+	votes := e.state.Poll.Votes[:0]
+	for _, v := range e.state.Poll.Votes {
+		if v.Voter != "human" {
+			votes = append(votes, v)
+		}
+	}
+	e.state.Poll.Votes = append(votes, Vote{
+		Voter: "human", Choice: choice, Option: e.state.Poll.Options[choice], Reason: "your vote",
+	})
+	e.state.Poll.Turnout = len(e.state.Poll.Votes)
+	e.state.Updated = now()
+	e.mu.Unlock()
+	e.emit()
+	return nil
+}
+
 func (e *Engine) setStatus(status, phase string) {
 	e.mu.Lock()
 	e.state.Status = status

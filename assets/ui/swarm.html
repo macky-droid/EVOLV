@@ -113,6 +113,13 @@
   .top h1 { font-family: var(--serif); font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
   .top p { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .run-meta { color: var(--faint); font: 500 9.5px/1 var(--mono); margin-left: 9px; letter-spacing: .02em; }
+  .phase-rail { display: flex; gap: 4px; padding: 7px 34px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 40%, var(--bg)); overflow: auto; }
+  .phase-step { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: var(--faint); font: 600 8px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 3px 6px; border-radius: 999px; }
+  .phase-step .p-dot { width: 4px; height: 4px; border-radius: 50%; background: #c8bfb0; }
+  .phase-step.done { color: var(--ok); }
+  .phase-step.done .p-dot { background: var(--ok); }
+  .phase-step.active { color: var(--accent); background: var(--accent-soft); }
+  .phase-step.active .p-dot { background: var(--accent); animation: blink .9s infinite; }
   .top .phase-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
   .top .phase-dot.busy { background: var(--accent); animation: blink 1s infinite; }
   .top-actions { display: flex; gap: 7px; align-items: center; }
@@ -208,6 +215,12 @@
   .side { background: #f2ede3; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
   .panel { padding: 18px 18px 16px; border-bottom: 1px solid var(--line); overflow: auto; }
   .panel.grow { flex: 1; }
+  .map-panel { flex-shrink: 0; }
+  #colony-map { width: 100%; height: 136px; display: block; border: 1px solid var(--line); border-radius: 10px; background: #f8f5ee; }
+  .vote-btn { border: 1px solid var(--line); background: var(--panel); color: var(--accent); border-radius: 999px; padding: 2px 6px; font: 600 8px/1.2 var(--mono); cursor: pointer; }
+  .vote-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .vote-btn.voted { color: var(--ok); border-color: var(--ok); background: var(--accent-soft); }
+  .msg.kind-steer .body { border-left: 2px solid var(--accent); padding-left: 10px; color: var(--soft); }
   .panel-head {
     display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;
     color: var(--muted); font: 650 9px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase;
@@ -266,7 +279,6 @@
       <div><b>Swarm</b><span>beta · colony</span></div>
     </div>
     <a class="back-link" href="/">← back to the organism</a>
-    <a class="back-link" href="/genesis">◇ Genesis workspace →</a>
     <div class="rail-label">mission</div>
     <p class="mission is-empty" id="mission">No mission yet.</p>
     <div class="rail-label">agents <span id="agent-count">5</span></div>
@@ -289,6 +301,7 @@
         <button class="btn" id="stop" disabled>stop swarm</button>
       </div>
     </header>
+    <div class="phase-rail" id="phase-rail"></div>
     <div class="activity" id="activity" hidden><span class="spark"></span><span id="activity-text"></span></div>
 
     <section class="thread" id="thread" aria-live="polite">
@@ -327,6 +340,10 @@
   </main>
 
   <aside class="side">
+    <section class="panel map-panel">
+      <div class="panel-head"><span>colony</span><span id="map-count">0</span></div>
+      <canvas id="colony-map" width="280" height="136"></canvas>
+    </section>
     <section class="panel">
       <div class="panel-head"><span>polls</span><span id="poll-count">0</span></div>
       <div id="polls"><p class="panel-empty">Polls appear here as the colony decides.</p></div>
@@ -362,6 +379,8 @@
   const roleFilterEl = $('#role-filter');
   const exportBtn = $('#export');
   const historySelect = $('#history');
+  const phaseRail = $('#phase-rail');
+  const mapCanvas = $('#colony-map');
   const input = $('#mission-input');
   const composer = $('#composer');
   const wsDot = $('#ws-dot');
@@ -400,6 +419,7 @@
     return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
   function roleOf(id) {
+    if (id === 'human') return { id: 'human', name: 'You', icon: '✎', color: 'var(--accent)', blurb: 'in the room' };
     const agents = (state && state.agents) || [];
     return agents.find(a => a.id === id) || { id, name: id, icon: '·', color: '#8a8174', blurb: '' };
   }
@@ -462,6 +482,60 @@
     };
     roleFilterEl.append(make('all', 'all'));
     for (const r of roles) roleFilterEl.append(make(r.id, r.name));
+  }
+
+  const phaseOrder = ['ideating', 'voting', 'coding', 'testing', 'reviewing', 'shipping', 'judging'];
+  function renderPhaseRail() {
+    phaseRail.replaceChildren();
+    const active = state.status === 'done' ? -1 : phaseOrder.indexOf(state.phase);
+    phaseOrder.forEach((phase, i) => {
+      const step = el('span', 'phase-step' + (active === i ? ' active' : (active > i || state.status === 'done' ? ' done' : '')), phase);
+      step.prepend(el('span', 'p-dot'));
+      phaseRail.append(step);
+    });
+  }
+
+  function drawMap() {
+    if (!mapCanvas) return;
+    const rect = mapCanvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    mapCanvas.width = Math.max(1, Math.floor(rect.width * dpr));
+    mapCanvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    const ctx = mapCanvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = rect.width, h = rect.height;
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = '#f8f5ee'; ctx.fillRect(0, 0, w, h);
+    const cx = w / 2, cy = h / 2;
+    const agents = state.agents || [];
+    ctx.strokeStyle = '#e2dbcf'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#c96442'; ctx.beginPath(); ctx.arc(cx, cy, 3.2, 0, Math.PI * 2); ctx.fill();
+    const n = agents.length;
+    const rings = Math.max(1, Math.ceil(n / 12));
+    const maxR = Math.min(w, h) * 0.40;
+    const stepR = rings > 1 ? (maxR - 16) / (rings - 1) : 0;
+    for (let i = 0; i < n; i++) {
+      const a = agents[i];
+      const ring = Math.floor(i / 12);
+      const count = Math.min(12, n - ring * 12);
+      const angle = ((i % 12) / count) * Math.PI * 2 + ring * 0.32;
+      const radius = 16 + ring * stepR;
+      const x = cx + Math.cos(angle) * radius;
+      const y = cy + Math.sin(angle) * radius * 0.72;
+      const thinking = a.status === 'thinking';
+      const color = a.color || '#8a8174';
+      ctx.globalAlpha = a.status === 'done' ? 0.48 : 0.95;
+      if (thinking) {
+        ctx.fillStyle = color; ctx.globalAlpha = 0.16;
+        ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(x, y, thinking ? 3 : 2.2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    $('#map-count').textContent = String(n);
   }
 
   function renderAgents() {
@@ -544,6 +618,13 @@
         const top = el('div', 'opt-top');
         top.append(el('span', null, (index + 1) + '. ' + option));
         top.append(el('span', null, votes.length + '/' + total));
+        if (poll.open && running && !viewingHistory) {
+          const mine = (poll.votes || []).some(v => v.voter === 'human' && v.choice === index);
+          const vote = el('button', 'vote-btn' + (mine ? ' voted' : ''), mine ? 'voted ✓' : 'vote');
+          vote.type = 'button';
+          vote.addEventListener('click', () => castVote(index));
+          top.append(vote);
+        }
         const bar = el('div', 'bar');
         const fill = el('i');
         fill.style.width = pct + '%';
@@ -604,9 +685,10 @@
     runMeta.textContent = meta.join(' · ');
     phaseDot.classList.toggle('busy', running);
     phaseDot.style.background = state.status === 'error' ? 'var(--danger)' : '';
-    runBtn.disabled = running;
+    runBtn.disabled = false;
+    runBtn.textContent = running ? 'steer ↑' : 'start swarm ↑';
+    input.placeholder = running ? 'Steer the colony while it works…' : 'Ask the swarm to design, build, test and vote on something…';
     stopBtn.disabled = !running;
-    input.disabled = running;
     sizeSelect.disabled = running;
     if (state.status !== 'running') {
       activityEl.hidden = true;
@@ -621,8 +703,10 @@
     if (!viewingHistory && state.status === 'done') {
       setTimeout(loadHistoryRuns, 700);
     }
+    renderPhaseRail();
     renderRoleFilter();
     renderAgents();
+    drawMap();
     renderMessages();
     renderPolls();
     renderArtifacts();
@@ -699,6 +783,38 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  async function castVote(choice) {
+    try {
+      const res = await fetch('/api/swarm/vote', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ choice })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'vote could not be cast');
+      }
+    } catch (e) {
+      errorEl.hidden = false; errorEl.textContent = e.message || String(e);
+    }
+  }
+
+  async function steerSwarm(message) {
+    errorEl.hidden = true;
+    try {
+      const res = await fetch('/api/swarm/steer', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'steer failed');
+      }
+      input.value = ''; autoGrow(); input.focus();
+    } catch (e) {
+      errorEl.hidden = false; errorEl.textContent = e.message || String(e);
+    }
+  }
+
   async function startSwarm(mission) {
     viewingHistory = false;
     historySelect.value = '';
@@ -745,7 +861,8 @@
     event.preventDefault();
     const mission = input.value.trim();
     if (!mission) { input.focus(); return; }
-    startSwarm(mission);
+    if (running) steerSwarm(mission);
+    else startSwarm(mission);
   });
   input.addEventListener('input', autoGrow);
   input.addEventListener('keydown', (event) => {
@@ -765,6 +882,7 @@
     });
   }
 
+  window.addEventListener('resize', () => { if (state) drawMap(); });
   connect();
   initial();
   loadHistoryRuns();

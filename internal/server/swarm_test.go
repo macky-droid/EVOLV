@@ -131,16 +131,25 @@ func TestSwarmRunHistory(t *testing.T) {
 	id := s.swarm.Snapshot().ID
 	time.Sleep(30 * time.Millisecond)
 
-	rec = httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/swarm/runs", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("runs -> %d", rec.Code)
-	}
 	var list struct {
 		Runs []swarmRunSummary `json:"runs"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-		t.Fatal(err)
+	// Archiving happens in the state publish callback; wait for it instead of
+	// relying on a fixed sleep under the race detector.
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rec = httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/swarm/runs", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("runs -> %d", rec.Code)
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatal(err)
+		}
+		if len(list.Runs) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if len(list.Runs) == 0 || list.Runs[0].ID != id {
 		t.Fatalf("runs = %+v, want %s", list.Runs, id)

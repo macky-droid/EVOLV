@@ -197,7 +197,6 @@ jobs:
         with:
           subject-path: |
             dist/evolv_*
-            dist/evolv.spdx.json
             dist/checksums.txt
 
       - name: Publish GitHub release
@@ -210,7 +209,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/evolv_*
-            dist/evolv.spdx.json
             dist/checksums.txt
 
       - name: Diagnostics on failure

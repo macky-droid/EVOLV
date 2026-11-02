@@ -21,7 +21,6 @@ import (
 	"github.com/dxn111/EVOLV/internal/bus"
 	"github.com/dxn111/EVOLV/internal/providers"
 	"github.com/dxn111/EVOLV/internal/server"
-	"github.com/dxn111/EVOLV/internal/update"
 	"github.com/dxn111/EVOLV/internal/watcher"
 	"github.com/dxn111/EVOLV/internal/workspace"
 )
@@ -90,12 +89,20 @@ func banner() {
 // rendered string that may carry ANSI colour, so the border always lines up.
 const cardInner = 62
 
-func cardTop() {
-	fmt.Println("  " + paint(bold, "┌"+strings.Repeat("─", cardInner)+"┐"))
+func cardTop(title string) {
+	prefix := ""
+	if title != "" {
+		prefix = "─ " + title + " "
+	}
+	fill := cardInner - utf8.RuneCountInString(prefix)
+	if fill < 0 {
+		fill = 0
+	}
+	fmt.Println("  " + paint(bold, "╭"+prefix+strings.Repeat("─", fill)+"╮"))
 }
 
 func cardBottom() {
-	fmt.Println("  " + paint(bold, "└"+strings.Repeat("─", cardInner)+"┘"))
+	fmt.Println("  " + paint(bold, "╰"+strings.Repeat("─", cardInner)+"╯"))
 }
 
 func cardRow(plain, rendered string) {
@@ -117,20 +124,26 @@ func cardKV(label, value, valueColor string) {
 	cardRow(plain, rendered)
 }
 
+func cardKVLink(label, url string) {
+	plain := fmt.Sprintf("  %-11s %s", label, url)
+	rendered := "  " + paint(dim, fmt.Sprintf("%-11s", label)) + " " + paint(cyan, hyperlink(url, url))
+	cardRow(plain, rendered)
+}
+
 func cardNote(symbol, text, symbolColor string) {
 	plain := "  " + symbol + "  " + text
 	rendered := "  " + paint(symbolColor, symbol) + "  " + paint(dim, text)
 	cardRow(plain, rendered)
 }
 
-func bootCard(url, provider, model, genome string, opening, headless bool) {
-	cardTop()
-	cardNote("●", "organism online", green)
+func bootCard(url, provider, model, genome string, opening, headless bool, boot time.Duration) {
+	cardTop("organism online")
+	cardNote("●", "ready · v"+workspace.Version+" · "+formatBoot(boot), green)
 	cardBlank()
-	cardKV("local", url, cyan)
+	cardKVLink("local", url)
 	cardKV("provider", provider+" · "+model, violet)
 	cardKV("genome", genome, dim)
-	cardKV("watch", "live hot-reload", green)
+	cardKV("mode", "live hot-reload", green)
 	cardBlank()
 	switch {
 	case opening:
@@ -142,33 +155,8 @@ func bootCard(url, provider, model, genome string, opening, headless bool) {
 	}
 	cardBottom()
 	fmt.Println()
-	fmt.Println("  " + paint(dim, "ctrl+c pauses the organism · your genome survives"))
+	fmt.Println("  " + paint(dim, "ctrl+c pauses the organism · your genome survives · update: ") + paint(bold, "evolv update"))
 	fmt.Println()
-}
-
-// runUpdate performs an in-place morph: downloads the latest release binary
-// and swaps it over the running one. The genome (~/.evolv) survives.
-func runUpdate() {
-	fmt.Println("  🧬 checking for a newer organism…")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	info, err := update.Latest(ctx, workspace.Version)
-	if err != nil {
-		fmt.Println("  ✗ could not reach GitHub releases:", err)
-		os.Exit(1)
-	}
-	if info == nil {
-		fmt.Printf("  ✓ already the latest organism (v%s)\n", workspace.Version)
-		return
-	}
-	fmt.Printf("  ⬇ morphing v%s → v%s …\n", workspace.Version, info.Version)
-	ver, err := update.SelfUpdate(ctx)
-	if err != nil {
-		fmt.Println("  ✗ update failed:", err)
-		os.Exit(1)
-	}
-	fmt.Printf("  ✓ morphed to v%s — your genome at ~/.evolv is untouched\n", ver)
-	fmt.Println("    restart evolv to wake the new body")
 }
 
 func main() {
@@ -176,7 +164,19 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "update", "upgrade":
-			runUpdate()
+			runUpdate(os.Args[2:])
+			return
+		case "download":
+			runDownload(os.Args[2:])
+			return
+		case "status":
+			runStatus(os.Args[2:])
+			return
+		case "help":
+			printHelp()
+			return
+		case "version":
+			fmt.Println("evolv", workspace.Version)
 			return
 		case "export":
 			runExport(os.Args[2:])
@@ -193,6 +193,7 @@ func main() {
 		version = flag.Bool("version", false, "print version")
 		reset   = flag.Bool("reset", false, "reset workspace UI to factory genome")
 	)
+	flag.Usage = printHelp
 	flag.Parse()
 
 	if *version {
@@ -200,6 +201,7 @@ func main() {
 		return
 	}
 	banner()
+	bootStart := time.Now()
 
 	ws, err := workspace.Load(assets.FS)
 	if err != nil {
@@ -249,7 +251,7 @@ func main() {
 	headless := os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == ""
 	opening := !*noOpen && !headless && (*open || ws.Config.OpenBrowser)
 
-	bootCard(url, prov.Name(), model, ws.Root, opening, headless)
+	bootCard(url, prov.Name(), model, ws.Root, opening, headless, time.Since(bootStart))
 
 	if opening {
 		go func() {

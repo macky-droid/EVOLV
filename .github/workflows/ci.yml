@@ -131,6 +131,10 @@ jobs:
           curl -fsS http://127.0.0.1:17391/api/metrics | grep -q '^evolv_up 1$'
           curl -fsS 'http://127.0.0.1:17391/api/history?limit=1' | grep -q '"total":0'
           curl -fsS http://127.0.0.1:17391/ | grep -qi '<!doctype html>'
+          test -x /tmp/evolv-smoke
+          /tmp/evolv-smoke --version | grep -q '^evolv '
+          /tmp/evolv-smoke --help | grep -q 'evolv download'
+          /tmp/evolv-smoke status --port 17391 | grep -q 'alive'
           curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:17391/api/health | grep -q '^200$'
 
           # Cross-origin state-changing requests and DNS-rebinding Host

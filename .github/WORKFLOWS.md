@@ -46,8 +46,9 @@ toolchain it actually used.
   binary names, runs `evolv --version`, generates checksums, and verifies
   them with `sha256sum -c` before attesting and uploading.
 - **The smoke job boots the real binary.** It builds `./cmd/evolv`, starts it
-  on a temporary home, probes `/api/health`, `/api/metrics` and the UI, then
-  sends SIGTERM and fails if the process does not drain and exit.
+  on a temporary home, probes `/api/health`, `/api/metrics`, `/api/history`, the UI and the CLI
+  (`--version`, `--help`, `status`), then sends SIGTERM and fails if the
+  process does not drain and exit.
 
 ## What runs on every PR
 

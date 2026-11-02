@@ -348,8 +348,12 @@ launch_card() {
   card_blank
   card_row "  flags   --port N | --no-open | --reset | --version" \
            "  ${DIM}flags${RESET}   --port N | --no-open | --reset | --version"
-  card_row "  update  evolv update" \
-           "  ${DIM}update${RESET}  evolv update"
+  card_row "  update  evolv update [--check]" \
+           "  ${DIM}update${RESET}  evolv update [--check]"
+  card_row "  grab    evolv download --dir ." \
+           "  ${DIM}grab${RESET}    evolv download --dir ."
+  card_row "  status  evolv status" \
+           "  ${DIM}status${RESET}  evolv status"
   card_blank
   card_bottom
   printf "\n  %s\n\n" "${DIM}support: dxn1.0day@gmail.com · discord @dxn1_ai${RESET}"

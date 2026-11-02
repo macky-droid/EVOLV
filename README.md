@@ -190,11 +190,15 @@ cd EVOLV && make install
 Then:
 
 ```bash
-evolv             # → http://localhost:7373 opens in your browser automatically
-evolv update      # morph in-place to the latest release (genome survives)
-evolv --port 8080 # custom port
-evolv --no-open   # headless / ssh
-evolv --reset     # restore the factory genome (your evolution ledger + snapshots survive)
+evolv                  # → http://localhost:7373 opens in your browser automatically
+evolv update           # morph in-place to the latest release (genome survives)
+evolv update --check   # current vs latest, no download
+evolv download         # fetch the latest platform binary into this folder
+evolv status           # live health card for a running organism
+evolv --port 8080      # custom port
+evolv --no-open        # headless / ssh
+evolv --reset          # restore the factory genome (your evolution ledger + snapshots survive)
+evolv help             # the full command map
 ```
 
 <div align="center"><img src="docs/assets/shot_settings.png" alt="EVOLV settings drawer: provider picker with free anonymous Kilo Gateway, BYOK fields for OpenAI, Anthropic, OpenRouter, Groq, Ollama and custom endpoints" width="92%"></div>
@@ -314,6 +318,8 @@ The kernel polls GitHub Releases at boot and every 6 hours. When a newer version
 > 🧬 a newer organism exists: v0.3.0 — **[morph now]**
 
 Click *morph now* (or run `evolv update`) and the latest binary is downloaded and swapped over the running one. Your genome — every evolution it ever made — survives untouched. Restart once and the new body is live.
+
+Downloads are **SHA-256 verified against the release's `checksums.txt`** before a binary can be swapped. `evolv download` gives you the same verified artifact without touching the launcher.
 
 ---
 

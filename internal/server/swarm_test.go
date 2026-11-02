@@ -104,6 +104,9 @@ func TestSwarmStatePersists(t *testing.T) {
 	if got := s.swarm.Snapshot().Status; got != "done" {
 		t.Fatalf("run did not finish: %s", got)
 	}
+	// The state publish callback persists last.json and the archive after the
+	// status flips; give it time to finish before TempDir cleanup.
+	time.Sleep(100 * time.Millisecond)
 
 	// A fresh server pointed at the same genome must restore the last run.
 	reloaded := New(s.ws, bus.New(), nil, nil)

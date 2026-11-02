@@ -36,6 +36,8 @@ type Agent struct {
 
 	lastAct      time.Time // last real user activity (drives dreaming)
 	dreaming     bool
+	dreamStop    chan struct{}
+	dreamWG      sync.WaitGroup
 	lastSnapshot string
 }
 

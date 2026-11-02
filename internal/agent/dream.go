@@ -33,12 +33,29 @@ func (a *Agent) Dreaming() bool {
 	return a.dreaming
 }
 
-// StartDreaming launches the idle heartbeat loop. One goroutine per agent.
+// StartDreaming launches the idle heartbeat loop. One goroutine per agent;
+// repeated calls are no-ops until StopDreaming runs.
 func (a *Agent) StartDreaming() {
+	a.mu.Lock()
+	if a.dreamStop != nil {
+		a.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	a.dreamStop = stop
+	a.mu.Unlock()
+
+	a.dreamWG.Add(1)
 	go func() {
+		defer a.dreamWG.Done()
 		t := time.NewTicker(5 * time.Second) // cheap check; cadence is cfg.HeartbeatMins
 		defer t.Stop()
-		for range t.C {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+			}
 			a.mu.Lock()
 			cfg := *a.ws.Config
 			idle := time.Since(a.lastAct)
@@ -53,6 +70,21 @@ func (a *Agent) StartDreaming() {
 			a.DreamNow()
 		}
 	}()
+}
+
+// StopDreaming retires the heartbeat loop and waits for any in-flight dream to
+// finish. Tests and short-lived agents need this; the daemon simply runs it for
+// the life of the process.
+func (a *Agent) StopDreaming() {
+	a.mu.Lock()
+	if a.dreamStop == nil {
+		a.mu.Unlock()
+		return
+	}
+	close(a.dreamStop)
+	a.dreamStop = nil
+	a.mu.Unlock()
+	a.dreamWG.Wait()
 }
 
 // DreamNow runs one autonomous evolution turn right now. Safe to call

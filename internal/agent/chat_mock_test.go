@@ -60,6 +60,7 @@ func TestHeartbeatTriggersDream(t *testing.T) {
 	a.ws.Config.AutoEvolve = true
 	a.ws.Config.HeartbeatMins = 1
 	a.StartDreaming()
+	defer a.StopDreaming() // wait for the in-flight dream; leaked loops race test teardown
 	// simulate long idle
 	a.mu.Lock()
 	a.lastAct = a.lastAct.Add(-2 * time.Minute)

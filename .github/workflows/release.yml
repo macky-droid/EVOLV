@@ -12,6 +12,12 @@ on:
 
 permissions:
   contents: write
+  id-token: write # build provenance attestation
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -26,12 +32,14 @@ jobs:
           cache: true
 
       - name: Test before shipping
-        run: go test ./... -count=1
+        run: go test ./... -count=1 -shuffle=on -timeout=10m
 
       - name: Resolve version
         id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
-          raw="${{ github.event.inputs.version }}"
+          raw="$INPUT_VERSION"
           if [ -z "$raw" ]; then
             raw="${GITHUB_REF_NAME}"
           fi
@@ -59,6 +67,26 @@ jobs:
           build darwin amd64; build darwin arm64
           build windows amd64; build windows arm64
 
+      - name: Smoke-test the release binary
+        run: |
+          chmod +x dist/evolv_linux_amd64
+          got="$(dist/evolv_linux_amd64 --version)"
+          want="evolv $VERSION"
+          if [ "$got" != "$want" ]; then
+            echo "version mismatch: got '$got', want '$want'" >&2
+            exit 1
+          fi
+
+      - name: Checksums
+        run: sha256sum dist/evolv_* > dist/checksums.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/evolv_*
+            dist/checksums.txt
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
@@ -66,4 +94,6 @@ jobs:
           name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: dist/evolv_*
+          files: |
+            dist/evolv_*
+            dist/checksums.txt

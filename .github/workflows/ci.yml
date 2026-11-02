@@ -42,7 +42,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./... -count=1
+        run: go test ./... -count=1 -shuffle=on -timeout=10m
 
       - name: Build
         run: go build ./...
@@ -83,6 +83,8 @@ jobs:
             goarch: arm64
           - goos: windows
             goarch: amd64
+          - goos: windows
+            goarch: arm64
     steps:
       - uses: actions/checkout@v4
 

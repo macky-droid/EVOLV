@@ -164,6 +164,8 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/":
 		rel = workspace.UIRel() + "/index.html"
+	case r.URL.Path == "/swarm" || r.URL.Path == "/swarm/" || r.URL.Path == "/swarm.html":
+		rel = workspace.UIRel() + "/swarm.html" // coming-soon preview, a real page not a modal
 	case strings.HasPrefix(r.URL.Path, "/ui/"):
 		rel = workspace.UIRel() + "/" + strings.TrimPrefix(r.URL.Path, "/ui/")
 	case r.URL.Path == "/style.css" || r.URL.Path == "/app.js":

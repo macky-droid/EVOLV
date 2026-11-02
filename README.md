@@ -344,7 +344,7 @@ Treat it like a very eager intern with root: brilliant, fun, supervise according
 - [x] The whole page is the canvas — **shipped in v0.10.0** (organs mount inline in the conversation, open full-window from the sidebar)
 - [x] A shell that doesn't embarrass itself — **shipped in v0.8.0** (markdown rendering, copy buttons, streaming caret, welcome screen, genome file deletion)
 - [ ] Component marketplace — export / import genomes as `.evolvpack` files
-- [ ] Multi-organism mode — agents that evolve together
+- [ ] Swarm mode — many minds, one organism; a live coming-soon preview sits at `/swarm`
 - [ ] Vision — components that can see (canvas screenshots as tool input)
 - [ ] Voice
 

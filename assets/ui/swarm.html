@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarm mode — EVOLV</title>
+<meta name="description" content="Swarm mode is coming to EVOLV: many minds, one organism.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231a1917'/%3E%3Cpath d='M32 7 53 19v25L32 57 11 44V19Z' fill='none' stroke='%23d97757' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23d97757'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #171614;
+    --panel: #21201d;
+    --line: #3a3835;
+    --text: #e8e6e1;
+    --dim: #a8a49c;
+    --faint: #78746c;
+    --accent: #d97757;
+    --accent-soft: rgba(217, 119, 87, 0.14);
+    --ok: #6ec59a;
+    --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--font);
+    overflow: hidden; -webkit-font-smoothing: antialiased;
+  }
+  #field {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    display: block; opacity: .9;
+  }
+  .vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(circle at 50% 42%, transparent 0 18%, rgba(23,22,20,.72) 58%, var(--bg) 100%),
+      linear-gradient(180deg, rgba(23,22,20,.35), transparent 30%, transparent 70%, rgba(23,22,20,.55));
+  }
+  main {
+    position: relative; z-index: 2; min-height: 100%; display: grid;
+    place-items: center; padding: 32px;
+  }
+  .card {
+    width: min(680px, 100%); padding: clamp(28px, 5vw, 52px);
+    border: 1px solid color-mix(in srgb, var(--line) 78%, var(--accent) 22%);
+    border-radius: 24px;
+    background:
+      linear-gradient(145deg, rgba(33,32,29,.94), rgba(26,25,23,.92));
+    box-shadow: 0 30px 100px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02) inset;
+    backdrop-filter: blur(14px); text-align: center;
+    animation: rise .8s cubic-bezier(.2,.8,.2,1) both;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px) scale(.985); } }
+  .brand {
+    display: inline-flex; align-items: center; gap: 9px; margin-bottom: 26px;
+    color: var(--dim); font-size: 11px; letter-spacing: .28em; text-transform: uppercase;
+  }
+  .brand .sigil {
+    width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+    background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    color: var(--accent); font-size: 13px;
+  }
+  h1 {
+    font-size: clamp(42px, 8vw, 78px); line-height: .95; letter-spacing: -.04em;
+    font-weight: 750; margin: 0 0 16px;
+  }
+  h1 em {
+    font-style: normal;
+    background: linear-gradient(100deg, var(--accent), #f0b08d 55%, #efe6dc);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede {
+    max-width: 44ch; margin: 0 auto 30px; color: var(--dim);
+    font-size: clamp(14px, 2.3vw, 17px); line-height: 1.65;
+  }
+  .soon {
+    display: inline-flex; align-items: center; gap: 9px; margin-bottom: 28px;
+    padding: 8px 14px; border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+    background: color-mix(in srgb, var(--ok) 9%, transparent);
+    color: var(--ok); font: 650 10px/1 var(--mono); letter-spacing: .22em; text-transform: uppercase;
+  }
+  .soon i {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+    box-shadow: 0 0 0 0 rgba(110,197,154,.5); animation: ping 2.1s ease-out infinite;
+  }
+  @keyframes ping { 70% { box-shadow: 0 0 0 9px rgba(110,197,154,0); } 100% { box-shadow: 0 0 0 0 rgba(110,197,154,0); } }
+  .grid {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 30px 0 34px;
+    border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--line);
+    text-align: left;
+  }
+  .grid div { background: rgba(26,25,23,.92); padding: 14px 16px; }
+  .grid small {
+    display: block; margin-bottom: 5px; color: var(--faint);
+    font: 600 9px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase;
+  }
+  .grid b { font-size: 13px; font-weight: 600; color: var(--text); }
+  .actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .back {
+    display: inline-flex; align-items: center; gap: 9px; padding: 12px 20px;
+    border-radius: 999px; border: 1px solid var(--line); color: var(--text);
+    background: rgba(255,255,255,.02); text-decoration: none; font-size: 13px; font-weight: 600;
+    transition: .18s ease;
+  }
+  .back:hover { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
+  .back span { color: var(--accent); }
+  .foot {
+    margin-top: 30px; color: var(--faint); font: 500 10px/1.6 var(--mono);
+    letter-spacing: .1em; text-transform: uppercase;
+  }
+  @media (max-width: 560px) {
+    .grid { grid-template-columns: 1fr; }
+    body { overflow: auto; }
+    main { padding: 18px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card, .soon i { animation: none; }
+    #field { display: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="field" aria-hidden="true"></canvas>
+<div class="vignette"></div>
+<main>
+  <section class="card" aria-labelledby="title">
+    <div class="brand"><span class="sigil">◇</span> EVOLV · swarm protocol</div>
+    <h1 id="title">Many minds.<br><em>One organism.</em></h1>
+    <p class="lede">
+      Swarm mode lets a colony of EVOLV strands share a task, argue about it,
+      mutate in parallel, and converge on one answer. It is not here yet.
+      The field is already moving.
+    </p>
+    <div class="soon"><i></i> coming soon</div>
+    <div class="grid" aria-label="Swarm mode capabilities">
+      <div><small>parallel</small><b>fan-out thinking</b></div>
+      <div><small>shared</small><b>colony memory</b></div>
+      <div><small>converge</small><b>one answer</b></div>
+    </div>
+    <div class="actions">
+      <a class="back" href="/"><span>←</span> back to the organism</a>
+    </div>
+    <div class="foot">github.com/dxn111/EVOLV · swarm preview</div>
+  </section>
+</main>
+<script>
+  (() => {
+    const canvas = document.getElementById('field');
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let w = 0, h = 0, dpr = 1;
+    const dots = [];
+    const N = 72;
+    const pointer = { x: -9999, y: -9999 };
+    const rand = (a, b) => a + Math.random() * (b - a);
+
+    function resize() {
+      dpr = Math.min(2, devicePixelRatio || 1);
+      w = innerWidth; h = innerHeight;
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+      canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function seed() {
+      dots.length = 0;
+      for (let i = 0; i < N; i++) {
+        dots.push({
+          x: rand(0, w), y: rand(0, h),
+          vx: rand(-.22, .22), vy: rand(-.22, .22),
+          r: rand(1.1, 2.6),
+          warm: Math.random() < .25
+        });
+      }
+    }
+
+    function step() {
+      const cx = w * .5 + Math.sin(performance.now() / 4200) * w * .08;
+      const cy = h * .44 + Math.cos(performance.now() / 5200) * h * .05;
+      for (const d of dots) {
+        d.vx += (cx - d.x) * .00003;
+        d.vy += (cy - d.y) * .00003;
+        const dx = d.x - pointer.x, dy = d.y - pointer.y;
+        const m = Math.hypot(dx, dy);
+        if (m < 150 && m > 0) {
+          const push = (150 - m) / 150 * .08;
+          d.vx += dx / m * push; d.vy += dy / m * push;
+        }
+        d.vx += rand(-.012, .012); d.vy += rand(-.012, .012);
+        d.vx *= .992; d.vy *= .992;
+        d.x += d.vx; d.y += d.vy;
+        if (d.x < -20) d.x = w + 20; if (d.x > w + 20) d.x = -20;
+        if (d.y < -20) d.y = h + 20; if (d.y > h + 20) d.y = -20;
+      }
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, w, h);
+      for (let i = 0; i < dots.length; i++) {
+        for (let j = i + 1; j < dots.length; j++) {
+          const a = dots[i], b = dots[j];
+          const dist = Math.hypot(a.x - b.x, a.y - b.y);
+          if (dist > 118) continue;
+          ctx.globalAlpha = (1 - dist / 118) * .16;
+          ctx.strokeStyle = a.warm || b.warm ? '#d97757' : '#a8a49c';
+          ctx.lineWidth = .65;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+      for (const d of dots) {
+        const glow = d.warm ? 'rgba(217,119,87,.22)' : 'rgba(232,230,225,.10)';
+        ctx.beginPath(); ctx.arc(d.x, d.y, d.r * 5, 0, Math.PI * 2);
+        ctx.fillStyle = glow; ctx.fill();
+        ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+        ctx.fillStyle = d.warm ? '#d97757' : 'rgba(232,230,225,.68)'; ctx.fill();
+      }
+    }
+
+    let last = 0;
+    function frame(t) {
+      if (t - last > 32) { step(); draw(); last = t; }
+      requestAnimationFrame(frame);
+    }
+
+    addEventListener('resize', () => { resize(); seed(); if (reduce) draw(); });
+    addEventListener('pointermove', e => { pointer.x = e.clientX; pointer.y = e.clientY; }, { passive: true });
+    addEventListener('pointerleave', () => { pointer.x = -9999; pointer.y = -9999; });
+
+    resize(); seed();
+    if (reduce) { draw(); } else { requestAnimationFrame(frame); }
+  })();
+</script>
+</body>
+</html>

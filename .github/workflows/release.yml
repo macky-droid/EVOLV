@@ -144,16 +144,16 @@ jobs:
       - name: Verify artifact set
         timeout-minutes: 3
         run: |
-          expected="
+          expected=(
             evolv_linux_amd64
             evolv_linux_arm64
             evolv_darwin_amd64
             evolv_darwin_arm64
             evolv_windows_amd64.exe
             evolv_windows_arm64.exe
-          "
+          )
           missing=0
-          for f in $expected; do
+          for f in "${expected[@]}"; do
             if [ ! -f "dist/$f" ]; then
               echo "::error::missing release artifact: dist/$f"
               missing=1

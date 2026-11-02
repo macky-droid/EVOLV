@@ -35,7 +35,7 @@ jobs:
       - name: Scan the module
         timeout-minutes: 10
         run: |
-          "$(go env GOPATH)/bin/govulncheck" ./..."
+          "$(go env GOPATH)/bin/govulncheck" ./...
 
       - name: Diagnostics on failure
         if: failure()

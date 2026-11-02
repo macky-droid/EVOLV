@@ -86,4 +86,4 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -o /tmp/evolv-$GOOS-$GOARCH ./cmd/evolv
+        run: go build -trimpath -o "/tmp/evolv-${GOOS}-${GOARCH}" ./cmd/evolv

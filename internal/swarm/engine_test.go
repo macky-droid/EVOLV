@@ -9,7 +9,7 @@ import (
 
 func TestDemoSwarmCompletes(t *testing.T) {
 	e := New(nil, nil)
-	if _, err := e.Start(context.Background(), "build a tiny focus timer"); err != nil {
+	if _, err := e.Start(context.Background(), "build a tiny focus timer", 5); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
@@ -46,14 +46,14 @@ func TestDemoSwarmCompletes(t *testing.T) {
 
 func TestStartRequiresMission(t *testing.T) {
 	e := New(nil, nil)
-	if _, err := e.Start(context.Background(), "   "); err == nil {
+	if _, err := e.Start(context.Background(), "   ", 5); err == nil {
 		t.Fatal("empty mission accepted")
 	}
 }
 
 func TestParseIdeas(t *testing.T) {
 	ideas := parseIdeas(`{"ideas":[{"title":"A","pitch":"one"},{"title":"B","pitch":"two"},{"title":"C","pitch":"three"},{"title":"D","pitch":"four"}]}`)
-	if len(ideas) != 3 || ideas[0].Title != "A" || ideas[2].Title != "C" {
+	if len(ideas) != 4 || ideas[0].Title != "A" || ideas[3].Title != "D" {
 		t.Fatalf("ideas = %+v", ideas)
 	}
 }
@@ -69,5 +69,38 @@ func TestParseVote(t *testing.T) {
 	choice, reason := parseVote("totally broken", options)
 	if choice != 0 || !strings.Contains(reason, "broken") {
 		t.Fatalf("last-resort vote = %d %q", choice, reason)
+	}
+}
+
+func TestHundredAgentSwarm(t *testing.T) {
+	e := New(nil, nil)
+	st, err := e.Start(context.Background(), "design a hundred-agent review room", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size != 100 || len(st.Agents) != 100 {
+		t.Fatalf("roster = size %d / %d agents", st.Size, len(st.Agents))
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if e.Snapshot().Status == "done" {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	final := e.Snapshot()
+	if final.Status != "done" {
+		t.Fatalf("100-agent swarm did not finish: %s %s %s", final.Status, final.Phase, final.Error)
+	}
+	if len(final.Polls) < 2 {
+		t.Fatalf("polls = %d", len(final.Polls))
+	}
+	for _, p := range final.Polls {
+		if len(p.Votes) != 100 {
+			t.Fatalf("poll %s has %d votes, want 100", p.ID, len(p.Votes))
+		}
+	}
+	if len(final.Messages) < 20 {
+		t.Fatalf("transcript too small for 100 agents: %d", len(final.Messages))
 	}
 }

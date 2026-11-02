@@ -69,7 +69,7 @@
     display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
   }
   .mission.is-empty { color: var(--faint); font-style: italic; }
-  .agents { display: flex; flex-direction: column; gap: 2px; overflow: auto; }
+  .agents { display: flex; flex-direction: column; gap: 2px; overflow: auto; flex: 1; min-height: 0; }
   .agent {
     display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 9px;
     padding: 8px; border-radius: 10px; min-width: 0;
@@ -169,8 +169,17 @@
   }
   .composer textarea::placeholder { color: var(--faint); }
   .composer-foot { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
-  .composer-foot span { color: var(--faint); font: 500 9.5px/1 var(--mono); margin-right: auto; }
-  @media (max-width: 760px) { .composer-foot span { display: none; } }
+  .composer-foot > span { color: var(--faint); font: 500 9.5px/1 var(--mono); margin-right: auto; }
+  .colony-size {
+    display: inline-flex; align-items: center; gap: 6px; color: var(--faint);
+    font: 500 9.5px/1 var(--mono);
+  }
+  .colony-size select {
+    border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2);
+    color: var(--soft); font: 600 10px/1 var(--mono); padding: 5px 6px; cursor: pointer; outline: none;
+  }
+  .colony-size select:focus { border-color: var(--accent); }
+  @media (max-width: 760px) { .composer-foot > span { display: none; } }
 
   /* ── side ─────────────────────────────────────────────────────────── */
   .side { background: #f2ede3; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
@@ -255,7 +264,7 @@
         <div class="empty" id="empty">
           <div class="orb">◇</div>
           <h2>Give the swarm a mission.</h2>
-          <p>Five role-specialised agents share a transcript, build in turns, and settle decisions with explicit votes. You watch the colony think.</p>
+          <p>Up to 100 role-specialised agents share a transcript, build in turns, and settle decisions with explicit votes. You watch the colony think.</p>
           <div class="chips">
             <button class="chip" data-mission="Design a tiny focus timer that lives on the EVOLV canvas">a focus timer</button>
             <button class="chip" data-mission="Build a local-first habit tracker with a weekly review">a habit tracker</button>
@@ -270,6 +279,15 @@
     <form class="composer" id="composer">
       <textarea id="mission-input" rows="1" maxlength="2000" placeholder="Ask the swarm to design, build, test and vote on something…" aria-label="Swarm mission"></textarea>
       <div class="composer-foot">
+        <label class="colony-size">colony
+          <select id="size" aria-label="Number of agents">
+            <option value="5">5 agents</option>
+            <option value="10">10 agents</option>
+            <option value="25">25 agents</option>
+            <option value="50">50 agents</option>
+            <option value="100">100 agents</option>
+          </select>
+        </label>
         <span>enter to start · shift+enter for a new line</span>
         <button class="btn primary" id="run" type="submit">start swarm <span aria-hidden="true">↑</span></button>
       </div>
@@ -305,6 +323,7 @@
   const errorEl = $('#error');
   const stopBtn = $('#stop');
   const runBtn = $('#run');
+  const sizeSelect = $('#size');
   const input = $('#mission-input');
   const composer = $('#composer');
   const wsDot = $('#ws-dot');
@@ -405,7 +424,7 @@
 
     let last = null;
     for (const m of messages) {
-      const role = roleOf(m.role);
+      const role = roleOf(m.agent || m.role);
       const art = el('article', 'msg kind-' + (m.kind || 'message'));
       const avatar = el('div', 'avatar', role.icon || '·');
       avatar.style.color = role.color || 'var(--ink)';
@@ -465,12 +484,15 @@
         opt.append(top, bar);
         if (votes.length && !poll.open) {
           const reasons = el('div', 'reasons');
-          for (const v of votes) {
+          for (const v of votes.slice(0, 3)) {
             const role = roleOf(v.voter);
             const reason = el('div', 'reason');
             reason.append(el('b', null, role.name + ': '));
             reason.append(document.createTextNode(v.reason || 'agrees'));
             reasons.append(reason);
+          }
+          if (votes.length > 3) {
+            reasons.append(el('div', 'reason', '+' + (votes.length - 3) + ' more votes'));
           }
           opt.append(reasons);
         }
@@ -503,6 +525,7 @@
     state = next || state;
     if (!state) return;
     running = state.status === 'running';
+    if (state.size) sizeSelect.value = String(state.size);
     missionEl.textContent = state.mission || 'No mission yet.';
     missionEl.classList.toggle('is-empty', !state.mission);
     phaseEl.textContent = phaseLabels[state.phase] || (state.phase + ' · ' + (state.status || ''));
@@ -511,6 +534,7 @@
     runBtn.disabled = running;
     stopBtn.disabled = !running;
     input.disabled = running;
+    sizeSelect.disabled = running;
     if (state.error) {
       errorEl.hidden = false;
       errorEl.textContent = state.error;
@@ -531,7 +555,7 @@
       const res = await fetch('/api/swarm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mission })
+        body: JSON.stringify({ mission, agents: Number(sizeSelect.value) || 5 })
       });
       const text = await res.text();
       let data = null;

@@ -406,12 +406,13 @@ func (s *Server) handleSwarm(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var in struct {
 			Mission string `json:"mission"`
+			Agents  int    `json:"agents"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.Mission) == "" {
 			writeJSONError(w, http.StatusBadRequest, "mission is required")
 			return
 		}
-		st, err := s.swarm.Start(r.Context(), in.Mission)
+		st, err := s.swarm.Start(r.Context(), in.Mission, in.Agents)
 		if err != nil {
 			code := http.StatusBadRequest
 			if strings.Contains(err.Error(), "already running") {

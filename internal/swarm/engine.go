@@ -44,11 +44,12 @@ func roleByID(id string) (Role, bool) {
 
 // Message is one line in the shared colony transcript.
 type Message struct {
-	ID   string `json:"id"`
-	Role string `json:"role"`
-	Kind string `json:"kind"` // idea | code | test | review | final | system
-	Text string `json:"text"`
-	Time string `json:"time"`
+	ID    string `json:"id"`
+	Agent string `json:"agent,omitempty"` // specific agent, e.g. coder-02
+	Role  string `json:"role"`
+	Kind  string `json:"kind"` // idea | code | test | review | final | system
+	Text  string `json:"text"`
+	Time  string `json:"time"`
 }
 
 // Vote is one agent's answer to a poll. Choice is zero-based.
@@ -72,6 +73,8 @@ type Poll struct {
 // AgentState is the roster card in the UI.
 type AgentState struct {
 	ID     string `json:"id"`
+	Role   string `json:"role"`
+	Index  int    `json:"index"`
 	Name   string `json:"name"`
 	Icon   string `json:"icon"`
 	Color  string `json:"color"`
@@ -91,6 +94,7 @@ type Artifact struct {
 type State struct {
 	ID        string       `json:"id"`
 	Mission   string       `json:"mission"`
+	Size      int          `json:"size"`
 	Phase     string       `json:"phase"`
 	Status    string       `json:"status"` // idle | running | done | stopped | error
 	Started   string       `json:"started,omitempty"`
@@ -127,7 +131,7 @@ type Engine struct {
 // deterministic demo colony so the page is useful with no model configured.
 func New(source providerSource, publish publisher) *Engine {
 	e := &Engine{source: source, publish: publish}
-	e.state = idleState()
+	e.state = idleState(5)
 	return e
 }
 
@@ -138,12 +142,38 @@ func (e *Engine) emit() {
 	e.publish("swarm:state", e.Snapshot())
 }
 
-func idleState() State {
-	agents := make([]AgentState, 0, len(Roles))
-	for _, r := range Roles {
-		agents = append(agents, AgentState{ID: r.ID, Name: r.Name, Icon: r.Icon, Color: r.Color, Blurb: r.Blurb, Status: "ready"})
+func idleState(size int) State {
+	size = clampSize(size)
+	return State{Size: size, Phase: "idle", Status: "idle", Agents: buildAgents(size), Messages: []Message{}, Artifacts: []Artifact{}}
+}
+
+func clampSize(n int) int {
+	if n < 5 {
+		return 5
 	}
-	return State{Phase: "idle", Status: "idle", Agents: agents, Messages: []Message{}, Artifacts: []Artifact{}}
+	if n > 100 {
+		return 100
+	}
+	return n
+}
+
+// buildAgents distributes N agents round-robin across the five roles, so a
+// 100-agent colony has 20 of each and a 5-agent colony has one of each.
+func buildAgents(size int) []AgentState {
+	size = clampSize(size)
+	agents := make([]AgentState, 0, size)
+	counts := map[string]int{}
+	for i := 0; i < size; i++ {
+		r := Roles[i%len(Roles)]
+		counts[r.ID]++
+		n := counts[r.ID]
+		agents = append(agents, AgentState{
+			ID: fmt.Sprintf("%s-%02d", r.ID, n), Role: r.ID, Index: n,
+			Name: fmt.Sprintf("%s %02d", r.Name, n),
+			Icon: r.Icon, Color: r.Color, Blurb: r.Blurb, Status: "ready",
+		})
+	}
+	return agents
 }
 
 // Snapshot returns a copy safe to serialize while a run is mutating state.
@@ -176,7 +206,7 @@ func cloneState(s State) State {
 }
 
 // Start begins a run and returns the initial snapshot.
-func (e *Engine) Start(ctx context.Context, mission string) (State, error) {
+func (e *Engine) Start(ctx context.Context, mission string, size int) (State, error) {
 	mission = strings.TrimSpace(mission)
 	if mission == "" {
 		return State{}, fmt.Errorf("mission is required")
@@ -187,7 +217,7 @@ func (e *Engine) Start(ctx context.Context, mission string) (State, error) {
 		return State{}, fmt.Errorf("a swarm is already running")
 	}
 	runCtx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
-	e.state = idleState()
+	e.state = idleState(size)
 	e.state.ID = fmt.Sprintf("swarm-%d", time.Now().UnixNano())
 	e.state.Mission = mission
 	e.state.Status = "running"
@@ -264,11 +294,18 @@ func (e *Engine) setAgent(id, status, last string) {
 	e.emit()
 }
 
-func (e *Engine) addMessage(role, kind, text string) {
+func (e *Engine) addMessage(agentID, kind, text string) {
 	e.mu.Lock()
+	roleID := agentID
+	for _, a := range e.state.Agents {
+		if a.ID == agentID {
+			roleID = a.Role
+			break
+		}
+	}
 	e.seq++
 	e.state.Messages = append(e.state.Messages, Message{
-		ID: fmt.Sprintf("m%d", e.seq), Role: role, Kind: kind, Text: text, Time: now(),
+		ID: fmt.Sprintf("m%d", e.seq), Agent: agentID, Role: roleID, Kind: kind, Text: text, Time: now(),
 	})
 	e.state.Updated = now()
 	e.mu.Unlock()
@@ -365,16 +402,30 @@ func (e *Engine) run(ctx context.Context) {
 	e.mu.Unlock()
 
 	e.setPhase("ideating")
-	ideasText, err := e.call(ctx, "ideator", e.ideaPrompt())
+	ideators := e.roleAgents("ideator")
+	e.setRole("ideator", "thinking", "reading the mission")
+	ideasText, err := e.complete(ctx, mustRole("ideator"), e.ideaPrompt(ideators))
 	if err != nil {
 		e.fail(ctx, err)
 		return
 	}
 	ideas := parseIdeas(ideasText)
 	if len(ideas) == 0 {
-		ideas = []idea{{Title: "The obvious first move", Pitch: clip(ideasText, 400)}}
+		ideas = []idea{{Agent: ideators[0].ID, Title: "The obvious first move", Pitch: clip(ideasText, 400)}}
 	}
-	e.addMessage("ideator", "idea", formatIdeas(ideas))
+	for _, idea := range ideas {
+		agent := idea.Agent
+		if agent == "" || !e.hasAgent(agent) {
+			agent = ideators[0].ID
+		}
+		e.addMessage(agent, "idea", formatIdea(idea))
+	}
+	e.setRole("ideator", "ready", "ideas on the table")
+
+	// Keep the first poll readable even when 20 ideators speak.
+	if len(ideas) > 6 {
+		ideas = ideas[:6]
+	}
 	options := make([]string, 0, len(ideas))
 	for _, idea := range ideas {
 		options = append(options, idea.Title)
@@ -382,20 +433,9 @@ func (e *Engine) run(ctx context.Context) {
 	e.setPhase("voting")
 	poll := &Poll{ID: "direction", Question: "Which direction should the swarm build?", Options: options, Open: true}
 	e.setPoll(poll)
-	for _, role := range Roles {
-		select {
-		case <-ctx.Done():
-			e.fail(ctx, ctx.Err())
-			return
-		default:
-		}
-		vote, err := e.askVote(ctx, role.ID, poll.Question, options)
-		if err != nil {
-			e.fail(ctx, err)
-			return
-		}
-		e.addVote(vote)
-		e.setAgent(role.ID, "voted", "voted for "+vote.Option)
+	if err := e.collectVotes(ctx, poll); err != nil {
+		e.fail(ctx, err)
+		return
 	}
 	closed := e.closePoll()
 	winner := 0
@@ -405,74 +445,120 @@ func (e *Engine) run(ctx context.Context) {
 	chosen := ideas[winner]
 
 	e.setPhase("coding")
-	code, err := e.call(ctx, "coder", e.coderPrompt(chosen))
-	if err != nil {
-		e.fail(ctx, err)
-		return
-	}
-	e.addMessage("coder", "code", code)
-	e.addArtifact(safeName(chosen.Title)+".txt", "code", code)
-
-	e.setPhase("testing")
-	tests, err := e.call(ctx, "tester", e.testerPrompt(chosen, code))
-	if err != nil {
-		e.fail(ctx, err)
-		return
-	}
-	e.addMessage("tester", "test", tests)
-	e.addArtifact(safeName(chosen.Title)+".tests.txt", "test", tests)
-
-	e.setPhase("reviewing")
-	review, err := e.call(ctx, "critic", e.criticPrompt(chosen, code, tests))
-	if err != nil {
-		e.fail(ctx, err)
-		return
-	}
-	e.addMessage("critic", "review", review)
-
-	e.setPhase("shipping")
-	shipOptions := []string{"Ship it", "Revise once more"}
-	e.setPoll(&Poll{ID: "ship", Question: "Ship this direction?", Options: shipOptions, Open: true})
-	for _, role := range Roles {
-		vote, err := e.askVote(ctx, role.ID, "Should the colony ship this?", shipOptions)
+	code := make([]string, 0, 3)
+	for i, agent := range e.pick("coder", 3) {
+		lens := []string{"smallest working implementation", "robust edge cases", "testable seams"}[i%3]
+		out, err := e.callAgent(ctx, agent.ID, e.coderPrompt(agent, chosen, lens))
 		if err != nil {
 			e.fail(ctx, err)
 			return
 		}
-		e.addVote(vote)
-		e.setAgent(role.ID, "voted", "voted "+vote.Option)
+		e.addMessage(agent.ID, "code", out)
+		e.addArtifact(safeName(chosen.Title)+"-"+agent.ID+".txt", "code", out)
+		code = append(code, agent.Name+":\n"+out)
+	}
+
+	e.setPhase("testing")
+	tests := make([]string, 0, 3)
+	codeText := strings.Join(code, "\n\n")
+	for _, agent := range e.pick("tester", 3) {
+		out, err := e.callAgent(ctx, agent.ID, e.testerPrompt(agent, chosen, codeText))
+		if err != nil {
+			e.fail(ctx, err)
+			return
+		}
+		e.addMessage(agent.ID, "test", out)
+		e.addArtifact(safeName(chosen.Title)+"-"+agent.ID+".tests.txt", "test", out)
+		tests = append(tests, agent.Name+":\n"+out)
+	}
+	testText := strings.Join(tests, "\n\n")
+
+	e.setPhase("reviewing")
+	reviews := make([]string, 0, 3)
+	for _, agent := range e.pick("critic", 3) {
+		out, err := e.callAgent(ctx, agent.ID, e.criticPrompt(agent, chosen, codeText, testText))
+		if err != nil {
+			e.fail(ctx, err)
+			return
+		}
+		e.addMessage(agent.ID, "review", out)
+		reviews = append(reviews, agent.Name+":\n"+out)
+	}
+	reviewText := strings.Join(reviews, "\n\n")
+
+	e.setPhase("shipping")
+	shipOptions := []string{"Ship it", "Revise once more"}
+	shipPoll := &Poll{ID: "ship", Question: "Ship this direction?", Options: shipOptions, Open: true}
+	e.setPoll(shipPoll)
+	if err := e.collectVotes(ctx, shipPoll); err != nil {
+		e.fail(ctx, err)
+		return
 	}
 	ship := e.closePoll()
-
-	e.setPhase("judging")
 	decision := "ship"
 	if ship.Winner == 1 {
 		decision = "revise"
 	}
-	final, err := e.call(ctx, "judge", e.judgePrompt(chosen, code, tests, review, decision))
+
+	e.setPhase("judging")
+	judge := e.pick("judge", 1)[0]
+	final, err := e.callAgent(ctx, judge.ID, e.judgePrompt(judge, chosen, codeText, testText, reviewText, decision))
 	if err != nil {
 		e.fail(ctx, err)
 		return
 	}
-	e.addMessage("judge", "final", final)
+	e.addMessage(judge.ID, "final", final)
 	e.addArtifact("final.md", "final", final)
 	for _, role := range Roles {
-		e.setAgent(role.ID, "done", "done")
+		e.setRole(role.ID, "done", "done")
 	}
 	e.setStatus("done", "done")
 }
 
-func (e *Engine) call(ctx context.Context, roleID, user string) (string, error) {
-	role, ok := roleByID(roleID)
-	if !ok {
-		return "", fmt.Errorf("unknown role %q", roleID)
+// collectVotes asks one role cohort at a time to return a vote for every one
+// of its agents. Five model calls cover a 100-agent poll without pretending
+// the other 95 agents did not speak.
+func (e *Engine) collectVotes(ctx context.Context, poll *Poll) error {
+	for _, role := range Roles {
+		agents := e.roleAgents(role.ID)
+		if len(agents) == 0 {
+			continue
+		}
+		e.setRole(role.ID, "thinking", "voting")
+		prompt := e.batchVotePrompt(role, agents, poll.Question, poll.Options)
+		text, err := e.complete(ctx, role, prompt)
+		if err != nil {
+			return err
+		}
+		votes := parseBatchVotes(text, agents, poll.Options)
+		e.addVotes(votes)
+		e.setRole(role.ID, "voted", "voted")
 	}
-	e.setAgent(roleID, "thinking", "")
+	return nil
+}
+
+func (e *Engine) callAgent(ctx context.Context, agentID, user string) (string, error) {
+	agent, ok := e.agentByID(agentID)
+	if !ok {
+		return "", fmt.Errorf("unknown agent %q", agentID)
+	}
+	role, _ := roleByID(agent.Role)
+	e.setAgent(agentID, "thinking", "")
+	out, err := e.complete(ctx, role, user)
+	if err != nil {
+		e.setAgent(agentID, "ready", "")
+		return "", err
+	}
+	e.setAgent(agentID, "ready", clip(out, 90))
+	return out, nil
+}
+
+func (e *Engine) complete(ctx context.Context, role Role, user string) (string, error) {
 	if e.demo {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(70 * time.Millisecond):
+		case <-time.After(45 * time.Millisecond):
 		}
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
@@ -485,72 +571,163 @@ func (e *Engine) call(ctx context.Context, roleID, user string) (string, error) 
 		{Role: "user", Content: user + "\n\n" + e.transcript()},
 	}, func(providers.Delta) {})
 	if err != nil {
-		e.setAgent(roleID, "ready", "")
 		return "", err
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
 		text = "(the model returned an empty response)"
 	}
-	e.setAgent(roleID, "ready", clip(text, 90))
 	return text, nil
 }
 
 func (e *Engine) transcript() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	start := len(e.state.Messages) - 8
+	start := len(e.state.Messages) - 10
 	if start < 0 {
 		start = 0
 	}
 	var b strings.Builder
 	b.WriteString("Shared transcript (most recent last):\n")
 	for _, m := range e.state.Messages[start:] {
-		role, _ := roleByID(m.Role)
-		b.WriteString(role.Name + ": " + clip(m.Text, 900) + "\n")
+		b.WriteString(e.agentNameLocked(m.Agent) + ": " + clip(m.Text, 700) + "\n")
 	}
 	return b.String()
 }
 
-func (e *Engine) askVote(ctx context.Context, roleID, question string, options []string) (Vote, error) {
+func (e *Engine) hasAgent(id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, a := range e.state.Agents {
+		if a.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) agentByID(id string) (AgentState, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, a := range e.state.Agents {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return AgentState{}, false
+}
+
+func (e *Engine) agentNameLocked(id string) string {
+	for _, a := range e.state.Agents {
+		if a.ID == id {
+			return a.Name
+		}
+	}
+	return id
+}
+
+func (e *Engine) roleAgents(roleID string) []AgentState {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := []AgentState{}
+	for _, a := range e.state.Agents {
+		if a.Role == roleID {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func (e *Engine) pick(roleID string, max int) []AgentState {
+	agents := e.roleAgents(roleID)
+	if len(agents) > max {
+		agents = agents[:max]
+	}
+	return agents
+}
+
+func (e *Engine) setRole(roleID, status, last string) {
+	e.mu.Lock()
+	for i := range e.state.Agents {
+		if e.state.Agents[i].Role == roleID {
+			e.state.Agents[i].Status = status
+			if last != "" {
+				e.state.Agents[i].Last = last
+			}
+		}
+	}
+	e.state.Updated = now()
+	e.mu.Unlock()
+	e.emit()
+}
+
+func (e *Engine) addVotes(votes []Vote) {
+	e.mu.Lock()
+	if e.state.Poll != nil {
+		e.state.Poll.Votes = append(e.state.Poll.Votes, votes...)
+		for i := range e.state.Agents {
+			for _, v := range votes {
+				if v.Voter == e.state.Agents[i].ID {
+					e.state.Agents[i].Status = "voted"
+					e.state.Agents[i].Last = "voted " + v.Option
+				}
+			}
+		}
+	}
+	e.state.Updated = now()
+	e.mu.Unlock()
+	e.emit()
+}
+
+func (e *Engine) batchVotePrompt(role Role, agents []AgentState, question string, options []string) string {
 	var b strings.Builder
 	b.WriteString("Poll: " + question + "\nOptions:\n")
 	for i, option := range options {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, option)
 	}
-	b.WriteString("\nChoose exactly one option. Reply with JSON only: {\"choice\": <number>, \"reason\": \"one short sentence\"}")
-	text, err := e.call(ctx, roleID, b.String())
-	if err != nil {
-		return Vote{}, err
+	b.WriteString("\nAgents in this cohort:\n")
+	for _, agent := range agents {
+		b.WriteString("- " + agent.ID + " (" + agent.Name + ")\n")
 	}
-	choice, reason := parseVote(text, options)
-	return Vote{Voter: roleID, Choice: choice, Option: options[choice], Reason: reason}, nil
+	b.WriteString("\nEvery agent votes independently. Reply with JSON only: {\"votes\":[{\"agent\":\"<id>\",\"choice\":<number>,\"reason\":\"one short sentence\"}]}. Include exactly one vote per agent above.")
+	return b.String()
 }
 
-func (e *Engine) ideaPrompt() string {
-	return "Mission: " + e.mission() + "\n\nPropose three distinct, buildable directions. For each: a short title and a one-sentence pitch. Reply with JSON only: {\"ideas\":[{\"title\":\"...\",\"pitch\":\"...\"}]}."
+func (e *Engine) ideaPrompt(agents []AgentState) string {
+	var b strings.Builder
+	b.WriteString("Mission: " + e.mission() + "\n\nIdeator cohort:\n")
+	for _, a := range agents {
+		b.WriteString("- " + a.ID + "\n")
+	}
+	b.WriteString("\nEach ideator proposes exactly one distinct, buildable direction. Reply with JSON only: {\"ideas\":[{\"agent\":\"<id>\",\"title\":\"...\",\"pitch\":\"...\"}]}. Include one idea per ideator above.")
+	return b.String()
 }
 
-func (e *Engine) coderPrompt(idea idea) string {
-	return "Mission: " + e.mission() + "\nChosen direction: " + idea.Title + " — " + idea.Pitch + "\n\nBuild the smallest working implementation. Return the code or precise build steps in one artifact. Be concrete; no preamble."
+func (e *Engine) coderPrompt(agent AgentState, chosen idea, lens string) string {
+	return "Mission: " + e.mission() + "\nChosen direction: " + chosen.Title + " — " + chosen.Pitch + "\nYou are " + agent.Name + ". Your lens: " + lens + ".\n\nBuild the smallest real implementation from that lens. Return one concrete artifact with code or exact build steps; no preamble."
 }
 
-func (e *Engine) testerPrompt(idea idea, code string) string {
-	return "Mission: " + e.mission() + "\nChosen direction: " + idea.Title + "\nImplementation:\n" + clip(code, 4000) + "\n\nWrite the tests and edge cases that would prove or break this. Be concrete and adversarial."
+func (e *Engine) testerPrompt(agent AgentState, chosen idea, code string) string {
+	return "Mission: " + e.mission() + "\nDirection: " + chosen.Title + "\nImplementation:\n" + clip(code, 5000) + "\n\nYou are " + agent.Name + ". Write the tests and edge cases that would prove or break this. Be adversarial and concrete."
 }
 
-func (e *Engine) criticPrompt(idea idea, code, tests string) string {
-	return "Mission: " + e.mission() + "\nDirection: " + idea.Title + "\nCode:\n" + clip(code, 3000) + "\nTests:\n" + clip(tests, 2500) + "\n\nCritique the work. Name the strongest part, the biggest risk, and one change you would require before shipping."
+func (e *Engine) criticPrompt(agent AgentState, chosen idea, code, tests string) string {
+	return "Mission: " + e.mission() + "\nDirection: " + chosen.Title + "\nCode:\n" + clip(code, 3500) + "\nTests:\n" + clip(tests, 3000) + "\n\nYou are " + agent.Name + ". Name the strongest part, the biggest risk, and one change required before shipping."
 }
 
-func (e *Engine) judgePrompt(idea idea, code, tests, review, decision string) string {
-	return "Mission: " + e.mission() + "\nDirection: " + idea.Title + "\nCode:\n" + clip(code, 2500) + "\nTests:\n" + clip(tests, 2000) + "\nCritique:\n" + clip(review, 2000) + "\nThe colony voted: " + decision + ".\n\nWrite the final answer: what the swarm decided, what it built, how it was verified, and the next concrete step. Be concise. Do not repeat the whole code."
+func (e *Engine) judgePrompt(agent AgentState, chosen idea, code, tests, review, decision string) string {
+	return "Mission: " + e.mission() + "\nDirection: " + chosen.Title + "\nCode:\n" + clip(code, 3000) + "\nTests:\n" + clip(tests, 2500) + "\nCritique:\n" + clip(review, 2500) + "\nThe colony voted: " + decision + ".\n\nYou are " + agent.Name + ". Write the final answer: what the swarm decided, what it built, how it was verified, and the next concrete step. Be concise; do not repeat the whole code."
 }
 
 func (e *Engine) mission() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.state.Mission
+}
+
+func mustRole(id string) Role {
+	r, _ := roleByID(id)
+	return r
 }
 
 func rolePrompt(r Role) string {
@@ -571,6 +748,7 @@ func rolePrompt(r Role) string {
 }
 
 type idea struct {
+	Agent string `json:"agent,omitempty"`
 	Title string `json:"title"`
 	Pitch string `json:"pitch"`
 }
@@ -582,15 +760,13 @@ type ideaEnvelope struct {
 func parseIdeas(text string) []idea {
 	var env ideaEnvelope
 	if decodeJSON(text, &env) == nil && len(env.Ideas) > 0 {
-		out := make([]idea, 0, 3)
+		out := make([]idea, 0, len(env.Ideas))
 		for _, i := range env.Ideas {
+			i.Agent = strings.TrimSpace(i.Agent)
 			i.Title = strings.TrimSpace(i.Title)
 			i.Pitch = strings.TrimSpace(i.Pitch)
 			if i.Title != "" {
 				out = append(out, i)
-			}
-			if len(out) == 3 {
-				break
 			}
 		}
 		if len(out) > 0 {
@@ -614,6 +790,55 @@ func parseIdeas(text string) []idea {
 		}
 	}
 	return out
+}
+
+func parseBatchVotes(text string, agents []AgentState, options []string) []Vote {
+	var env struct {
+		Votes []struct {
+			Agent  string `json:"agent"`
+			Choice any    `json:"choice"`
+			Reason string `json:"reason"`
+		} `json:"votes"`
+	}
+	if decodeJSON(text, &env) == nil && len(env.Votes) > 0 {
+		byAgent := map[string]Vote{}
+		for _, v := range env.Votes {
+			choice := choiceNumber(v.Choice) - 1
+			if choice < 0 || choice >= len(options) {
+				choice = 0
+			}
+			byAgent[v.Agent] = Vote{Voter: v.Agent, Choice: choice, Option: options[choice], Reason: strings.TrimSpace(v.Reason)}
+		}
+		out := make([]Vote, 0, len(agents))
+		for i, agent := range agents {
+			if v, ok := byAgent[agent.ID]; ok {
+				out = append(out, v)
+				continue
+			}
+			choice := i % len(options)
+			out = append(out, Vote{Voter: agent.ID, Choice: choice, Option: options[choice], Reason: "inferred from the cohort vote"})
+		}
+		return out
+	}
+	// A sloppy model gets a deterministic fallback, never a missing agent.
+	out := make([]Vote, 0, len(agents))
+	for i, agent := range agents {
+		choice := i % len(options)
+		out = append(out, Vote{Voter: agent.ID, Choice: choice, Option: options[choice], Reason: clip(text, 140)})
+	}
+	return out
+}
+
+func choiceNumber(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case string:
+		var out int
+		fmt.Sscanf(n, "%d", &out)
+		return out
+	}
+	return 1
 }
 
 func parseVote(text string, options []string) (int, string) {
@@ -650,6 +875,13 @@ func decodeJSON(text string, v any) error {
 		return fmt.Errorf("no json object")
 	}
 	return json.NewDecoder(strings.NewReader(text[start:])).Decode(v)
+}
+
+func formatIdea(i idea) string {
+	if i.Pitch == "" {
+		return i.Title
+	}
+	return i.Title + " — " + i.Pitch
 }
 
 func formatIdeas(ideas []idea) string {

@@ -70,6 +70,14 @@
   }
   .mission.is-empty { color: var(--faint); font-style: italic; }
   .agents { display: flex; flex-direction: column; gap: 2px; overflow: auto; flex: 1; min-height: 0; }
+  .role-filter { display: flex; flex-wrap: wrap; gap: 3px; margin: 0 2px 7px; }
+  .role-filter button {
+    border: 1px solid var(--line); background: transparent; color: var(--faint);
+    border-radius: 999px; padding: 3px 6px; font: 600 8px/1.3 var(--mono);
+    letter-spacing: .05em; text-transform: uppercase; cursor: pointer;
+  }
+  .role-filter button:hover { color: var(--soft); border-color: var(--line-strong); }
+  .role-filter button.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
   .agent {
     display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 9px;
     padding: 8px; border-radius: 10px; min-width: 0;
@@ -106,6 +114,14 @@
   .top p { color: var(--muted); font-size: 12px; margin-top: 2px; }
   .top .phase-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
   .top .phase-dot.busy { background: var(--accent); animation: blink 1s infinite; }
+  .top-actions { display: flex; gap: 7px; align-items: center; }
+  .activity {
+    display: flex; align-items: center; gap: 8px; padding: 7px 34px;
+    border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent-soft) 55%, var(--bg));
+    color: var(--soft); font-size: 11.5px; min-height: 30px;
+  }
+  .activity .spark { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: blink .9s infinite; flex-shrink: 0; }
+  .activity b { color: var(--accent); font-weight: 650; }
   .btn {
     border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink);
     border-radius: 9px; padding: 8px 12px; font-size: 12px; cursor: pointer; transition: .15s;
@@ -147,7 +163,7 @@
     margin-top: 6px; padding: 17px 19px; border: 1px solid var(--line-strong);
     border-radius: 12px; background: var(--panel); color: var(--ink);
   }
-  .msg.kind-code .body, .msg.kind-test .body {
+  .msg.kind-code .body, .msg.kind-test .body, .msg.kind-revision .body {
     margin-top: 6px; padding: 15px 17px; border-radius: 12px;
     background: #22211e; color: #e8e3d9; font: 12px/1.65 var(--mono);
     border: 1px solid #33312c;
@@ -246,6 +262,7 @@
     <div class="rail-label">mission</div>
     <p class="mission is-empty" id="mission">No mission yet.</p>
     <div class="rail-label">agents <span id="agent-count">5</span></div>
+    <div class="role-filter" id="role-filter"></div>
     <div class="agents" id="agents"></div>
     <div class="rail-foot"><span class="dot" id="ws-dot"></span><span id="ws-label">connecting</span></div>
   </aside>
@@ -256,8 +273,12 @@
         <h1>Swarm mode</h1>
         <p><span class="phase-dot" id="phase-dot"></span><span id="phase">idle · many minds, one organism</span></p>
       </div>
-      <button class="btn" id="stop" disabled>stop swarm</button>
+      <div class="top-actions">
+        <button class="btn" id="export" type="button">export</button>
+        <button class="btn" id="stop" disabled>stop swarm</button>
+      </div>
     </header>
+    <div class="activity" id="activity" hidden><span class="spark"></span><span id="activity-text"></span></div>
 
     <section class="thread" id="thread" aria-live="polite">
       <div class="thread-inner" id="thread-inner">
@@ -324,6 +345,10 @@
   const stopBtn = $('#stop');
   const runBtn = $('#run');
   const sizeSelect = $('#size');
+  const activityEl = $('#activity');
+  const activityText = $('#activity-text');
+  const roleFilterEl = $('#role-filter');
+  const exportBtn = $('#export');
   const input = $('#mission-input');
   const composer = $('#composer');
   const wsDot = $('#ws-dot');
@@ -332,6 +357,7 @@
   let state = null;
   let running = false;
   let ws = null;
+  let roleFilter = 'all';
 
   const phaseLabels = {
     idle: 'idle · many minds, one organism',
@@ -387,6 +413,7 @@
       try {
         const ev = JSON.parse(event.data);
         if (ev.type === 'swarm:state' && ev.payload) render(ev.payload);
+        if (ev.type === 'swarm:activity' && ev.payload) showActivity(ev.payload);
       } catch {}
     };
   }
@@ -398,9 +425,34 @@
     } catch {}
   }
 
+  function roleMeta(roleID) {
+    const a = (state && state.agents || []).find(x => x.role === roleID) || {};
+    return { name: a.name ? a.name.replace(/\s+\d+$/, '') : roleID, color: a.color || 'var(--accent)' };
+  }
+
+  function renderRoleFilter() {
+    roleFilterEl.replaceChildren();
+    const roles = [];
+    const seen = new Set();
+    for (const a of (state.agents || [])) {
+      if (!a.role || seen.has(a.role)) continue;
+      seen.add(a.role);
+      roles.push({ id: a.role, name: (a.name || a.role).replace(/\s+\d+$/, '') });
+    }
+    const make = (id, label) => {
+      const b = el('button', id === roleFilter ? 'active' : '', label);
+      b.type = 'button';
+      b.addEventListener('click', () => { roleFilter = id; renderRoleFilter(); renderAgents(); });
+      return b;
+    };
+    roleFilterEl.append(make('all', 'all'));
+    for (const r of roles) roleFilterEl.append(make(r.id, r.name));
+  }
+
   function renderAgents() {
     agentsEl.replaceChildren();
-    const agents = state.agents || [];
+    const all = state.agents || [];
+    const agents = roleFilter === 'all' ? all : all.filter(a => a.role === roleFilter);
     for (const a of agents) {
       const row = el('div', 'agent ' + (a.status || 'ready'));
       const avatar = el('div', 'avatar', a.icon || '·');
@@ -412,7 +464,7 @@
       row.title = a.last || a.blurb || '';
       agentsEl.append(row);
     }
-    $('#agent-count').textContent = String(agents.length);
+    $('#agent-count').textContent = roleFilter === 'all' ? String(all.length) : agents.length + '/' + all.length;
   }
 
   function renderMessages() {
@@ -469,7 +521,7 @@
       const box = el('div', 'poll');
       box.append(el('div', 'q', poll.question));
       const total = (poll.votes || []).length;
-      box.append(el('div', 'meta', (poll.open ? 'open' : 'closed') + ' · ' + total + ' vote' + (total === 1 ? '' : 's')));
+      box.append(el('div', 'meta', (poll.open ? 'open' : 'closed') + ' · ' + total + ' vote' + (total === 1 ? '' : 's') + (poll.open || !poll.consensus ? '' : ' · ' + poll.consensus + '% consensus')));
       (poll.options || []).forEach((option, index) => {
         const votes = (poll.votes || []).filter(v => v.choice === index);
         const pct = total ? Math.round((votes.length / total) * 100) : 0;
@@ -535,6 +587,9 @@
     stopBtn.disabled = !running;
     input.disabled = running;
     sizeSelect.disabled = running;
+    if (state.status !== 'running') {
+      activityEl.hidden = true;
+    }
     if (state.error) {
       errorEl.hidden = false;
       errorEl.textContent = state.error;
@@ -542,10 +597,47 @@
       errorEl.hidden = true;
       errorEl.textContent = '';
     }
+    renderRoleFilter();
     renderAgents();
     renderMessages();
     renderPolls();
     renderArtifacts();
+  }
+
+  function showActivity(payload) {
+    if (!payload.text) { activityEl.hidden = true; return; }
+    const role = roleMeta(payload.role);
+    activityEl.hidden = false;
+    activityText.replaceChildren();
+    const b = el('b', null, role.name + ' ');
+    activityText.append(b, document.createTextNode(payload.text));
+  }
+
+  function exportTranscript() {
+    if (!state) return;
+    const lines = ['# Swarm — ' + (state.mission || 'untitled'), '', state.phase + ' · ' + state.status, ''];
+    for (const m of (state.messages || [])) {
+      const a = roleOf(m.agent || m.role);
+      lines.push('## ' + (a.name || m.role) + ' · ' + (m.kind || 'message'), '', m.text || '', '');
+    }
+    for (const p of allPolls()) {
+      lines.push('## Poll — ' + p.question, '');
+      (p.options || []).forEach((opt, idx) => {
+        const n = (p.votes || []).filter(v => v.choice === idx).length;
+        lines.push('- ' + (idx + 1) + '. ' + opt + ' — ' + n + '/' + (p.votes || []).length + ' votes');
+      });
+      lines.push('');
+    }
+    for (const a of (state.artifacts || [])) {
+      lines.push('## Artifact — ' + a.name, '', '```', a.content || '', '```', '');
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'swarm-' + (state.id || Date.now()) + '.md';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   async function startSwarm(mission) {
@@ -602,6 +694,7 @@
     }
   });
   stopBtn.addEventListener('click', stopSwarm);
+  exportBtn.addEventListener('click', exportTranscript);
   for (const chip of document.querySelectorAll('[data-mission]')) {
     chip.addEventListener('click', () => {
       input.value = chip.dataset.mission;

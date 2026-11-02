@@ -57,6 +57,7 @@ type Server struct {
 	wsMu        sync.Mutex
 	conns       map[*websocket.Conn]struct{}
 	swarm       *swarm.Engine
+	swarmMu     sync.Mutex
 	done        chan struct{}
 	closeOnce   sync.Once
 	latency     latencyHistogram
@@ -80,7 +81,11 @@ func New(ws *workspace.W, b *bus.Bus, ag *agent.Agent, reg *providers.Registry) 
 		return s.ag.ProviderSnapshot()
 	}, func(event string, payload any) {
 		s.bus.Publish(event, payload)
+		if state, ok := payload.(swarm.State); ok && event == "swarm:state" {
+			s.saveSwarmState(state)
+		}
 	})
+	s.loadSwarmState()
 	s.loadAgentProfiles()
 	s.routes()
 	return s
@@ -392,6 +397,40 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		"limit":    limit,
 		"offset":   offset,
 	})
+}
+
+func (s *Server) swarmStatePath() string {
+	return filepath.Join(s.ws.Dir(workspace.WorkspaceDir), "swarm", "last.json")
+}
+
+func (s *Server) saveSwarmState(st swarm.State) {
+	raw, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return
+	}
+	path := s.swarmStatePath()
+	s.swarmMu.Lock()
+	defer s.swarmMu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
+func (s *Server) loadSwarmState() {
+	raw, err := os.ReadFile(s.swarmStatePath())
+	if err != nil {
+		return
+	}
+	var st swarm.State
+	if json.Unmarshal(raw, &st) != nil || st.ID == "" {
+		return
+	}
+	s.swarm.Restore(st)
 }
 
 func (s *Server) handleSwarm(w http.ResponseWriter, r *http.Request) {

@@ -62,12 +62,15 @@ type Vote struct {
 
 // Poll is a decision point. Open polls accept votes; closed polls have a winner.
 type Poll struct {
-	ID       string   `json:"id"`
-	Question string   `json:"question"`
-	Options  []string `json:"options"`
-	Votes    []Vote   `json:"votes"`
-	Winner   int      `json:"winner"`
-	Open     bool     `json:"open"`
+	ID        string   `json:"id"`
+	Question  string   `json:"question"`
+	Options   []string `json:"options"`
+	Votes     []Vote   `json:"votes"`
+	Counts    []int    `json:"counts,omitempty"`
+	Turnout   int      `json:"turnout,omitempty"`
+	Consensus int      `json:"consensus,omitempty"` // winner's share, 0-100
+	Winner    int      `json:"winner"`
+	Open      bool     `json:"open"`
 }
 
 // AgentState is the roster card in the UI.
@@ -193,6 +196,7 @@ func cloneState(s State) State {
 			polls[i] = s.Polls[i]
 			polls[i].Options = append([]string(nil), s.Polls[i].Options...)
 			polls[i].Votes = append([]Vote(nil), s.Polls[i].Votes...)
+			polls[i].Counts = append([]int(nil), s.Polls[i].Counts...)
 		}
 		s.Polls = polls
 	}
@@ -200,6 +204,7 @@ func cloneState(s State) State {
 		p := *s.Poll
 		p.Options = append([]string(nil), s.Poll.Options...)
 		p.Votes = append([]Vote(nil), s.Poll.Votes...)
+		p.Counts = append([]int(nil), s.Poll.Counts...)
 		s.Poll = &p
 	}
 	return s
@@ -259,6 +264,30 @@ func (e *Engine) Stop() {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// Restore installs a persisted snapshot. A run that was interrupted by a
+// process exit becomes stopped; it never reappears as a live spinner.
+func (e *Engine) Restore(s State) {
+	if s.Size == 0 {
+		s.Size = 5
+	}
+	if len(s.Agents) == 0 {
+		s.Agents = buildAgents(s.Size)
+	}
+	if s.Status == "running" {
+		s.Status = "stopped"
+		s.Phase = "stopped"
+	}
+	if s.Messages == nil {
+		s.Messages = []Message{}
+	}
+	if s.Artifacts == nil {
+		s.Artifacts = []Artifact{}
+	}
+	e.mu.Lock()
+	e.state = s
+	e.mu.Unlock()
 }
 
 func (e *Engine) setStatus(status, phase string) {
@@ -354,11 +383,17 @@ func (e *Engine) closePoll() *Poll {
 				best = i
 			}
 		}
+		p.Counts = append([]int(nil), counts...)
+		p.Turnout = len(p.Votes)
+		if p.Turnout > 0 {
+			p.Consensus = counts[best] * 100 / p.Turnout
+		}
 		p.Winner = best
 		p.Open = false
 		closed := *p
 		closed.Options = append([]string(nil), p.Options...)
 		closed.Votes = append([]Vote(nil), p.Votes...)
+		closed.Counts = append([]int(nil), p.Counts...)
 		e.state.Polls = append(e.state.Polls, closed)
 	}
 	e.state.Updated = now()
@@ -500,6 +535,34 @@ func (e *Engine) run(ctx context.Context) {
 		decision = "revise"
 	}
 
+	if decision == "revise" {
+		e.setPhase("revising")
+		revised := make([]string, 0, 3)
+		for _, agent := range e.pick("coder", 3) {
+			out, err := e.callAgent(ctx, agent.ID, e.revisionPrompt(agent, chosen, codeText, testText, reviewText))
+			if err != nil {
+				e.fail(ctx, err)
+				return
+			}
+			e.addMessage(agent.ID, "revision", out)
+			e.addArtifact(safeName(chosen.Title)+"-"+agent.ID+"-revised.txt", "revision", out)
+			revised = append(revised, agent.Name+":\n"+out)
+		}
+		codeText = strings.Join(revised, "\n\n")
+		retests := make([]string, 0, 3)
+		for _, agent := range e.pick("tester", 3) {
+			out, err := e.callAgent(ctx, agent.ID, e.testerPrompt(agent, chosen, codeText))
+			if err != nil {
+				e.fail(ctx, err)
+				return
+			}
+			e.addMessage(agent.ID, "test", out)
+			e.addArtifact(safeName(chosen.Title)+"-"+agent.ID+"-retest.txt", "test", out)
+			retests = append(retests, agent.Name+":\n"+out)
+		}
+		testText = strings.Join(retests, "\n\n")
+	}
+
 	e.setPhase("judging")
 	judge := e.pick("judge", 1)[0]
 	final, err := e.callAgent(ctx, judge.ID, e.judgePrompt(judge, chosen, codeText, testText, reviewText, decision))
@@ -519,20 +582,41 @@ func (e *Engine) run(ctx context.Context) {
 // of its agents. Five model calls cover a 100-agent poll without pretending
 // the other 95 agents did not speak.
 func (e *Engine) collectVotes(ctx context.Context, poll *Poll) error {
-	for _, role := range Roles {
+	type batch struct {
+		role   Role
+		agents []AgentState
+		text   string
+		err    error
+	}
+	batches := make([]batch, len(Roles))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 3) // bounded parallel provider calls
+	for i, role := range Roles {
 		agents := e.roleAgents(role.ID)
 		if len(agents) == 0 {
 			continue
 		}
+		batches[i] = batch{role: role, agents: agents}
 		e.setRole(role.ID, "thinking", "voting")
-		prompt := e.batchVotePrompt(role, agents, poll.Question, poll.Options)
-		text, err := e.complete(ctx, role, prompt)
-		if err != nil {
-			return err
+		wg.Add(1)
+		go func(i int, role Role, agents []AgentState) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			text, err := e.complete(ctx, role, e.batchVotePrompt(role, agents, poll.Question, poll.Options))
+			batches[i].text, batches[i].err = text, err
+		}(i, role, agents)
+	}
+	wg.Wait()
+	for _, b := range batches {
+		if b.err != nil {
+			return b.err
 		}
-		votes := parseBatchVotes(text, agents, poll.Options)
-		e.addVotes(votes)
-		e.setRole(role.ID, "voted", "voted")
+		if len(b.agents) == 0 {
+			continue
+		}
+		e.addVotes(parseBatchVotes(b.text, b.agents, poll.Options))
+		e.setRole(b.role.ID, "voted", "voted")
 	}
 	return nil
 }
@@ -566,10 +650,23 @@ func (e *Engine) complete(ctx context.Context, role Role, user string) (string, 
 	e.mu.Lock()
 	prov, model := e.prov, e.model
 	e.mu.Unlock()
+	var live strings.Builder
+	last := time.Time{}
+	e.activity(role.ID, "thinking…")
 	text, err := prov.Stream(callCtx, model, []providers.Message{
 		{Role: "system", Content: rolePrompt(role)},
 		{Role: "user", Content: user + "\n\n" + e.transcript()},
-	}, func(providers.Delta) {})
+	}, func(d providers.Delta) {
+		if d.Content == "" {
+			return
+		}
+		live.WriteString(d.Content)
+		if now := time.Now(); now.Sub(last) > 120*time.Millisecond {
+			last = now
+			e.activity(role.ID, clip(live.String(), 180))
+		}
+	})
+	e.activity(role.ID, "")
 	if err != nil {
 		return "", err
 	}
@@ -578,6 +675,13 @@ func (e *Engine) complete(ctx context.Context, role Role, user string) (string, 
 		text = "(the model returned an empty response)"
 	}
 	return text, nil
+}
+
+func (e *Engine) activity(roleID, text string) {
+	if e.publish == nil {
+		return
+	}
+	e.publish("swarm:activity", map[string]string{"role": roleID, "text": text})
 }
 
 func (e *Engine) transcript() string {
@@ -713,6 +817,10 @@ func (e *Engine) testerPrompt(agent AgentState, chosen idea, code string) string
 
 func (e *Engine) criticPrompt(agent AgentState, chosen idea, code, tests string) string {
 	return "Mission: " + e.mission() + "\nDirection: " + chosen.Title + "\nCode:\n" + clip(code, 3500) + "\nTests:\n" + clip(tests, 3000) + "\n\nYou are " + agent.Name + ". Name the strongest part, the biggest risk, and one change required before shipping."
+}
+
+func (e *Engine) revisionPrompt(agent AgentState, chosen idea, code, tests, review string) string {
+	return "Mission: " + e.mission() + "\nDirection: " + chosen.Title + "\nCurrent code:\n" + clip(code, 3500) + "\nTests:\n" + clip(tests, 2000) + "\nCritique:\n" + clip(review, 2200) + "\n\nYou are " + agent.Name + ". The colony voted to revise. Apply the critique with the smallest coherent change and return the revised implementation. No preamble."
 }
 
 func (e *Engine) judgePrompt(agent AgentState, chosen idea, code, tests, review, decision string) string {
@@ -882,20 +990,6 @@ func formatIdea(i idea) string {
 		return i.Title
 	}
 	return i.Title + " — " + i.Pitch
-}
-
-func formatIdeas(ideas []idea) string {
-	var b strings.Builder
-	for i, idea := range ideas {
-		fmt.Fprintf(&b, "%d. %s", i+1, idea.Title)
-		if idea.Pitch != "" {
-			b.WriteString(" — " + idea.Pitch)
-		}
-		if i < len(ideas)-1 {
-			b.WriteString("\n")
-		}
-	}
-	return b.String()
 }
 
 func safeName(s string) string {

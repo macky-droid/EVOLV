@@ -2,9 +2,12 @@ package swarm
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dxn111/EVOLV/internal/providers"
 )
 
 func TestDemoSwarmCompletes(t *testing.T) {
@@ -96,11 +99,105 @@ func TestHundredAgentSwarm(t *testing.T) {
 		t.Fatalf("polls = %d", len(final.Polls))
 	}
 	for _, p := range final.Polls {
-		if len(p.Votes) != 100 {
-			t.Fatalf("poll %s has %d votes, want 100", p.ID, len(p.Votes))
+		if len(p.Votes) != 100 || p.Turnout != 100 {
+			t.Fatalf("poll %s has %d votes / turnout %d, want 100", p.ID, len(p.Votes), p.Turnout)
+		}
+		if len(p.Counts) == 0 || p.Consensus == 0 {
+			t.Fatalf("poll %s has no counts/consensus: %+v", p.ID, p)
 		}
 	}
 	if len(final.Messages) < 20 {
 		t.Fatalf("transcript too small for 100 agents: %d", len(final.Messages))
+	}
+}
+
+type reviseProvider struct{}
+
+func (reviseProvider) Name() string { return "scripted" }
+func (reviseProvider) Models(context.Context) ([]string, error) {
+	return []string{"scripted"}, nil
+}
+func (reviseProvider) Stream(_ context.Context, _ string, msgs []providers.Message, _ func(providers.Delta)) (string, error) {
+	system, user := "", ""
+	for _, m := range msgs {
+		if m.Role == "system" {
+			system = m.Content
+		}
+		if m.Role == "user" {
+			user = m.Content
+		}
+	}
+	if strings.Contains(user, "Every agent votes independently") {
+		choice := 1
+		if strings.Contains(user, "Revise once more") {
+			choice = 2
+		}
+		ids := demoIDs(user)
+		var b strings.Builder
+		b.WriteString(`{"votes":[`)
+		for i, id := range ids {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, `{"agent":%q,"choice":%d,"reason":"scripted"}`, id, choice)
+		}
+		b.WriteString(`]}`)
+		return b.String(), nil
+	}
+	switch {
+	case strings.Contains(system, "Ideator"):
+		ids := demoIDs(user)
+		var b strings.Builder
+		b.WriteString(`{"ideas":[`)
+		for i, id := range ids {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, `{"agent":%q,"title":"Direction %d","pitch":"pitch"}`, id, i+1)
+		}
+		b.WriteString(`]}`)
+		return b.String(), nil
+	case strings.Contains(system, "Coder"):
+		return "```\nimplementation\n```", nil
+	case strings.Contains(system, "Tester"):
+		return "tests", nil
+	case strings.Contains(system, "Critic"):
+		return "review", nil
+	case strings.Contains(system, "Judge"):
+		return "final", nil
+	}
+	return "ok", nil
+}
+
+func TestRevisionRoundRuns(t *testing.T) {
+	e := New(func() (providers.Provider, string) { return reviseProvider{}, "scripted" }, nil)
+	if _, err := e.Start(context.Background(), "build a thing that must be revised", 5); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && e.Snapshot().Status != "done" {
+		time.Sleep(20 * time.Millisecond)
+	}
+	st := e.Snapshot()
+	if st.Status != "done" {
+		t.Fatalf("status = %s: %s", st.Status, st.Error)
+	}
+	foundRevision := false
+	for _, m := range st.Messages {
+		if m.Kind == "revision" {
+			foundRevision = true
+		}
+	}
+	if !foundRevision {
+		t.Fatal("revise vote did not trigger a revision round")
+	}
+	foundArtifact := false
+	for _, a := range st.Artifacts {
+		if a.Kind == "revision" {
+			foundArtifact = true
+		}
+	}
+	if !foundArtifact {
+		t.Fatal("revision artifact missing")
 	}
 }

@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/dxn111/EVOLV/internal/bus"
 )
 
 func TestSwarmRoute(t *testing.T) {
@@ -67,6 +70,13 @@ func TestSwarmAPIStartStatusStop(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("stop swarm -> %d", rec.Code)
 	}
+	// Let the run goroutine observe cancellation and finish its persistence
+	// write before TempDir cleanup removes the workspace.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && s.swarm.Snapshot().Status == "running" {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
 }
 
 func TestSwarmAPIRejectsEmptyMission(t *testing.T) {
@@ -76,5 +86,32 @@ func TestSwarmAPIRejectsEmptyMission(t *testing.T) {
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty mission -> %d", rec.Code)
+	}
+}
+
+func TestSwarmStatePersists(t *testing.T) {
+	s, _ := newWbServer(t)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/swarm", strings.NewReader(`{"mission":"persist this colony","agents":10}`))
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start -> %d", rec.Code)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && s.swarm.Snapshot().Status == "running" {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := s.swarm.Snapshot().Status; got != "done" {
+		t.Fatalf("run did not finish: %s", got)
+	}
+
+	// A fresh server pointed at the same genome must restore the last run.
+	reloaded := New(s.ws, bus.New(), nil, nil)
+	st := reloaded.swarm.Snapshot()
+	if st.ID == "" || st.Mission != "persist this colony" || len(st.Messages) == 0 {
+		t.Fatalf("restored state = %+v", st)
+	}
+	if len(st.Agents) != 10 {
+		t.Fatalf("restored agents = %d", len(st.Agents))
 	}
 }

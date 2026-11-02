@@ -29,7 +29,25 @@ $ evolv          # boots on localhost:7373, opens your browser
 
 ---
 
-## What you just watched
+## EVOLV Genesis — The Living AI Workspace
+
+Genesis is the next layer of that vision: a workspace where agents don't just discuss, they **do**. Open **`/genesis`** and give it a mission. A supervisor decomposes the work into a task DAG, independent tasks run concurrently, builders write real files into an isolated run directory, and testers execute real commands. The run can only pass when a command exits zero and its evidence is recorded. The `/swarm` room stays as the discussion colony; Genesis is the execution workspace.
+
+### Genesis: tasks, files, evidence
+
+```text
+mission → supervisor → task DAG → parallel workers → real files → go test / pytest / npm test → verification gate → final
+```
+
+- **Dynamic roles**: Architect, Builder, Tester, Reviewer, Integrator (and the supervisor).
+- **Isolated workspace** per run under `workspace/swarm/exec/<id>/project/`.
+- **Real evidence**: tester commands are allow-listed and executed with a 90s timeout; stdout/stderr and exit code are stored on the task.
+- **No vote can override a failed gate**: a run with a failing or missing test command ends `blocked`, not `done`.
+- **Task-scoped context**: each agent receives only its dependencies' summaries and evidence, not the whole conversation.
+- **Live task board** over the existing WebSocket (`swarm:exec`, `swarm:exec:activity`, `swarm:exec:evidence`).
+- API: `POST /api/genesis`, `GET /api/genesis`, `POST /api/genesis/stop`.
+
+### What you just watched
 
 That GIF wasn't scripted. You're looking at an AI **rewriting its own application while it runs**:
 

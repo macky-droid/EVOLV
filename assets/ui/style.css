@@ -142,6 +142,7 @@ body:not(.sb-hidden) #sb-rail { display: none; }
 }
 .sb-btn:hover { background: var(--bg3); color: var(--text); }
 .swarm-btn span:first-child { color: var(--accent); }
+.genesis-btn span:first-child { color: var(--ok, #4f7f68); }
 .swarm-btn .soon-badge {
   margin-left: auto; padding: 2px 6px; border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));

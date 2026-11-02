@@ -144,6 +144,8 @@ jobs:
           curl -fsS http://127.0.0.1:17391/swarm | grep -qi 'swarm mode'
           curl -fsS http://127.0.0.1:17391/api/swarm | grep -q '"agents"'
           curl -fsS http://127.0.0.1:17391/api/swarm/runs | grep -q '"runs"'
+          curl -fsS http://127.0.0.1:17391/genesis | grep -qi 'genesis'
+          curl -fsS http://127.0.0.1:17391/api/genesis | grep -q '"tasks"'
           test -x /tmp/evolv-smoke
           /tmp/evolv-smoke --version | grep -q '^evolv '
           /tmp/evolv-smoke --help | grep -q 'evolv download'

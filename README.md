@@ -140,6 +140,10 @@ Flip on **Dream mode** in Settings (or press the *💭 dream now* button). When 
 
 Every dream is a real conversation turn, so the organism *remembers its dreams* — and every dream is snapshotted first, so nightmares are one rollback away.
 
+### Swarm mode: many minds, one organism
+
+Open **`/swarm`** (the 🐝 button in the sidebar) to convene a five-agent colony: **Ideator** finds three directions, **Coder** builds the chosen one, **Tester** tries to break it, **Critic** argues with both, and **Judge** writes the final decision. They share one transcript, work in phases, and settle decisions with explicit **polls** — every agent casts a vote with a reason. The page streams `swarm:state` over the existing WebSocket, so you watch the turns and vote bars land live. `POST /api/swarm` starts a run; `/api/swarm/stop` cancels it. Beta, and honest about it: artifacts are proposals until a tester actually runs them.
+
 ### The full action list
 
 | Action | What it does |
@@ -344,7 +348,7 @@ Treat it like a very eager intern with root: brilliant, fun, supervise according
 - [x] The whole page is the canvas — **shipped in v0.10.0** (organs mount inline in the conversation, open full-window from the sidebar)
 - [x] A shell that doesn't embarrass itself — **shipped in v0.8.0** (markdown rendering, copy buttons, streaming caret, welcome screen, genome file deletion)
 - [ ] Component marketplace — export / import genomes as `.evolvpack` files
-- [ ] Swarm mode — many minds, one organism; a live coming-soon preview sits at `/swarm`
+- [x] Swarm mode — five role-specialised agents think, build, test and vote together; live beta at `/swarm`
 - [ ] Vision — components that can see (canvas screenshots as tool input)
 - [ ] Voice
 

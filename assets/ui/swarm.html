@@ -4,234 +4,592 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Swarm mode — EVOLV</title>
-<meta name="description" content="Swarm mode is coming to EVOLV: many minds, one organism.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231a1917'/%3E%3Cpath d='M32 7 53 19v25L32 57 11 44V19Z' fill='none' stroke='%23d97757' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23d97757'/%3E%3C/svg%3E">
+<meta name="description" content="A colony of EVOLV agents that think, build, test and vote together.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f7f4ee'/%3E%3Cpath d='M32 7 53 19v25L32 57 11 44V19Z' fill='none' stroke='%23c96442' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23c96442'/%3E%3C/svg%3E">
 <style>
   :root {
-    --bg: #171614;
-    --panel: #21201d;
-    --line: #3a3835;
-    --text: #e8e6e1;
-    --dim: #a8a49c;
-    --faint: #78746c;
-    --accent: #d97757;
-    --accent-soft: rgba(217, 119, 87, 0.14);
-    --ok: #6ec59a;
-    --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    --bg: #f7f4ee;
+    --panel: #fffdf9;
+    --panel-2: #f1ece2;
+    --ink: #2b2a27;
+    --soft: #5f5a51;
+    --muted: #8a8174;
+    --faint: #aea598;
+    --line: #e4ddd1;
+    --line-strong: #d7cec0;
+    --accent: #c96442;
+    --accent-soft: #f3e3da;
+    --ok: #4f7f68;
+    --ok-soft: #e5efe9;
+    --danger: #b54b3d;
+    --serif: ui-serif, Georgia, 'Times New Roman', serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
     --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { height: 100%; }
   body {
-    background: var(--bg); color: var(--text); font-family: var(--font);
-    overflow: hidden; -webkit-font-smoothing: antialiased;
+    background: var(--bg); color: var(--ink); font-family: var(--sans);
+    font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased;
   }
-  #field {
-    position: fixed; inset: 0; width: 100%; height: 100%;
-    display: block; opacity: .9;
+  button, textarea { font: inherit; }
+  ::selection { background: var(--accent-soft); }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #d8d0c3; border-radius: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  .shell {
+    display: grid; grid-template-columns: 248px minmax(0, 1fr) 326px;
+    height: 100vh; overflow: hidden;
   }
-  .vignette {
-    position: fixed; inset: 0; pointer-events: none;
-    background:
-      radial-gradient(circle at 50% 42%, transparent 0 18%, rgba(23,22,20,.72) 58%, var(--bg) 100%),
-      linear-gradient(180deg, rgba(23,22,20,.35), transparent 30%, transparent 70%, rgba(23,22,20,.55));
+
+  /* ── rail ─────────────────────────────────────────────────────────── */
+  .rail {
+    background: #efeae0; border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; min-height: 0; padding: 20px 16px 14px;
   }
-  main {
-    position: relative; z-index: 2; min-height: 100%; display: grid;
-    place-items: center; padding: 32px;
+  .brand-row { display: flex; align-items: center; gap: 11px; margin-bottom: 18px; }
+  .mark {
+    width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center;
+    background: var(--accent); color: #fff8f2; text-decoration: none; font-size: 16px;
+    box-shadow: 0 4px 14px rgba(201,100,66,.22);
   }
-  .card {
-    width: min(680px, 100%); padding: clamp(28px, 5vw, 52px);
-    border: 1px solid color-mix(in srgb, var(--line) 78%, var(--accent) 22%);
-    border-radius: 24px;
-    background:
-      linear-gradient(145deg, rgba(33,32,29,.94), rgba(26,25,23,.92));
-    box-shadow: 0 30px 100px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02) inset;
-    backdrop-filter: blur(14px); text-align: center;
-    animation: rise .8s cubic-bezier(.2,.8,.2,1) both;
+  .brand-row b { display: block; font-family: var(--serif); font-size: 17px; letter-spacing: -.01em; }
+  .brand-row span { color: var(--muted); font: 650 9px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+  .back-link { color: var(--muted); font-size: 11.5px; text-decoration: none; margin-bottom: 24px; }
+  .back-link:hover { color: var(--accent); }
+  .rail-label {
+    display: flex; justify-content: space-between; align-items: center;
+    margin: 0 2px 8px; color: var(--muted);
+    font: 650 9px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase;
   }
-  @keyframes rise { from { opacity: 0; transform: translateY(14px) scale(.985); } }
-  .brand {
-    display: inline-flex; align-items: center; gap: 9px; margin-bottom: 26px;
-    color: var(--dim); font-size: 11px; letter-spacing: .28em; text-transform: uppercase;
+  .mission {
+    margin-bottom: 24px; color: var(--soft); font-size: 13px; line-height: 1.5;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
   }
-  .brand .sigil {
-    width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
-    background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-    color: var(--accent); font-size: 13px;
+  .mission.is-empty { color: var(--faint); font-style: italic; }
+  .agents { display: flex; flex-direction: column; gap: 2px; overflow: auto; }
+  .agent {
+    display: grid; grid-template-columns: 26px 1fr auto; align-items: center; gap: 9px;
+    padding: 8px; border-radius: 10px; min-width: 0;
   }
-  h1 {
-    font-size: clamp(42px, 8vw, 78px); line-height: .95; letter-spacing: -.04em;
-    font-weight: 750; margin: 0 0 16px;
+  .agent:hover { background: rgba(255,255,255,.5); }
+  .agent .avatar {
+    width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+    font-size: 11px; font-weight: 700; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line);
   }
-  h1 em {
-    font-style: normal;
-    background: linear-gradient(100deg, var(--accent), #f0b08d 55%, #efe6dc);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
+  .agent .who { min-width: 0; }
+  .agent .who b { display: block; font-size: 12px; font-weight: 650; }
+  .agent .who small { display: block; color: var(--faint); font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .agent .pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: #cfc7ba; }
+  .agent.thinking .pulse-dot { background: var(--accent); animation: blink .9s ease infinite; }
+  .agent.voted .pulse-dot { background: var(--ok); }
+  .agent.done .pulse-dot { background: var(--ok); }
+  .rail-foot {
+    margin-top: auto; padding-top: 14px; border-top: 1px solid var(--line);
+    display: flex; align-items: center; gap: 7px; color: var(--muted);
+    font: 500 10px/1 var(--mono);
   }
-  .lede {
-    max-width: 44ch; margin: 0 auto 30px; color: var(--dim);
-    font-size: clamp(14px, 2.3vw, 17px); line-height: 1.65;
+  .rail-foot .dot { width: 7px; height: 7px; border-radius: 50%; background: #c4bcb0; }
+  .rail-foot .dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+
+  /* ── main ─────────────────────────────────────────────────────────── */
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .top {
+    display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
+    padding: 22px 34px 16px; border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg) 86%, transparent); backdrop-filter: blur(8px);
   }
-  .soon {
-    display: inline-flex; align-items: center; gap: 9px; margin-bottom: 28px;
-    padding: 8px 14px; border-radius: 999px;
-    border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
-    background: color-mix(in srgb, var(--ok) 9%, transparent);
-    color: var(--ok); font: 650 10px/1 var(--mono); letter-spacing: .22em; text-transform: uppercase;
+  .top h1 { font-family: var(--serif); font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
+  .top p { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .top .phase-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
+  .top .phase-dot.busy { background: var(--accent); animation: blink 1s infinite; }
+  .btn {
+    border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink);
+    border-radius: 9px; padding: 8px 12px; font-size: 12px; cursor: pointer; transition: .15s;
   }
-  .soon i {
-    width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
-    box-shadow: 0 0 0 0 rgba(110,197,154,.5); animation: ping 2.1s ease-out infinite;
+  .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn.primary { background: var(--ink); color: #fffdf9; border-color: var(--ink); padding: 9px 15px; font-weight: 600; }
+  .btn.primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .thread { flex: 1; overflow: auto; padding: 10px 34px 28px; scroll-behavior: smooth; }
+  .thread-inner { width: min(760px, 100%); margin: 0 auto; }
+  .empty { min-height: 100%; display: grid; place-content: center; text-align: center; padding: 60px 0; }
+  .empty .orb {
+    width: 54px; height: 54px; margin: 0 auto 22px; border-radius: 50%;
+    display: grid; place-items: center; color: var(--accent); font-size: 23px;
+    border: 1px solid var(--line-strong); background: var(--panel);
   }
-  @keyframes ping { 70% { box-shadow: 0 0 0 9px rgba(110,197,154,0); } 100% { box-shadow: 0 0 0 0 rgba(110,197,154,0); } }
-  .grid {
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 30px 0 34px;
-    border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--line);
-    text-align: left;
+  .empty h2 { font-family: var(--serif); font-size: clamp(28px, 4vw, 38px); font-weight: 500; letter-spacing: -.03em; margin-bottom: 10px; }
+  .empty p { max-width: 46ch; margin: 0 auto 26px; color: var(--muted); font-size: 13.5px; }
+  .chips { display: flex; gap: 7px; flex-wrap: wrap; justify-content: center; }
+  .chip {
+    border: 1px solid var(--line); background: var(--panel); color: var(--soft);
+    border-radius: 999px; padding: 7px 12px; font-size: 11.5px; cursor: pointer;
+    transition: .15s;
   }
-  .grid div { background: rgba(26,25,23,.92); padding: 14px 16px; }
-  .grid small {
-    display: block; margin-bottom: 5px; color: var(--faint);
-    font: 600 9px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase;
+  .chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  .msg { display: grid; grid-template-columns: 30px 1fr; gap: 14px; padding: 17px 0; border-bottom: 1px solid var(--line); animation: fade .3s ease both; }
+  .msg:last-child { border-bottom: 0; }
+  .msg .avatar {
+    width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--panel); border: 1px solid var(--line-strong); font-size: 12px; font-weight: 700;
   }
-  .grid b { font-size: 13px; font-weight: 600; color: var(--text); }
-  .actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
-  .back {
-    display: inline-flex; align-items: center; gap: 9px; padding: 12px 20px;
-    border-radius: 999px; border: 1px solid var(--line); color: var(--text);
-    background: rgba(255,255,255,.02); text-decoration: none; font-size: 13px; font-weight: 600;
-    transition: .18s ease;
+  .msg .who { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .msg .who b { font-size: 12.5px; font-weight: 650; }
+  .msg .who span { color: var(--faint); font: 500 9px/1 var(--mono); letter-spacing: .05em; text-transform: uppercase; }
+  .msg .body { color: #3a3731; font-size: 14px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.kind-final .body {
+    margin-top: 6px; padding: 17px 19px; border: 1px solid var(--line-strong);
+    border-radius: 12px; background: var(--panel); color: var(--ink);
   }
-  .back:hover { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
-  .back span { color: var(--accent); }
-  .foot {
-    margin-top: 30px; color: var(--faint); font: 500 10px/1.6 var(--mono);
-    letter-spacing: .1em; text-transform: uppercase;
+  .msg.kind-code .body, .msg.kind-test .body {
+    margin-top: 6px; padding: 15px 17px; border-radius: 12px;
+    background: #22211e; color: #e8e3d9; font: 12px/1.65 var(--mono);
+    border: 1px solid #33312c;
   }
-  @media (max-width: 560px) {
-    .grid { grid-template-columns: 1fr; }
-    body { overflow: auto; }
-    main { padding: 18px; }
+  .msg.kind-system .body { color: var(--muted); font-size: 12.5px; }
+
+  .error {
+    margin: 0 34px 10px; padding: 10px 13px; border: 1px solid #e5c3bb;
+    background: #fbebe7; color: var(--danger); border-radius: 9px; font-size: 12px;
+  }
+  .composer {
+    width: min(760px, calc(100% - 68px)); margin: 0 auto 22px;
+    border: 1px solid var(--line-strong); border-radius: 16px; background: var(--panel);
+    box-shadow: 0 10px 40px rgba(70,58,42,.06); padding: 12px 12px 10px;
+  }
+  .composer textarea {
+    width: 100%; resize: none; border: 0; outline: 0; background: transparent;
+    color: var(--ink); font-size: 14px; line-height: 1.6; min-height: 24px; max-height: 160px;
+  }
+  .composer textarea::placeholder { color: var(--faint); }
+  .composer-foot { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+  .composer-foot span { color: var(--faint); font: 500 9.5px/1 var(--mono); margin-right: auto; }
+  @media (max-width: 760px) { .composer-foot span { display: none; } }
+
+  /* ── side ─────────────────────────────────────────────────────────── */
+  .side { background: #f2ede3; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .panel { padding: 18px 18px 16px; border-bottom: 1px solid var(--line); overflow: auto; }
+  .panel.grow { flex: 1; }
+  .panel-head {
+    display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;
+    color: var(--muted); font: 650 9px/1 var(--mono); letter-spacing: .16em; text-transform: uppercase;
+  }
+  .panel-empty { color: var(--faint); font-size: 11.5px; line-height: 1.55; }
+  .poll { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px dashed var(--line-strong); }
+  .poll:last-child { border-bottom: 0; margin-bottom: 0; }
+  .poll .q { font-size: 12.5px; font-weight: 650; margin-bottom: 2px; }
+  .poll .meta { color: var(--faint); font: 500 9px/1.5 var(--mono); margin-bottom: 10px; text-transform: uppercase; letter-spacing: .06em; }
+  .opt { margin-bottom: 9px; }
+  .opt-top { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; margin-bottom: 4px; }
+  .opt-top span:last-child { color: var(--muted); font-family: var(--mono); font-size: 9.5px; }
+  .opt.winner .opt-top { color: var(--accent); font-weight: 650; }
+  .bar { height: 5px; border-radius: 5px; background: #e5ded2; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 5px; transition: width .45s cubic-bezier(.2,.8,.2,1); }
+  .opt:not(.winner) .bar i { background: #a9a093; }
+  .reasons { margin-top: 7px; display: flex; flex-direction: column; gap: 4px; }
+  .reason { color: var(--muted); font-size: 10px; line-height: 1.45; }
+  .reason b { color: var(--soft); font-weight: 600; }
+  .artifact { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
+  .artifact summary {
+    cursor: pointer; padding: 9px 11px; font-size: 11.5px; font-weight: 600;
+    display: flex; justify-content: space-between; gap: 8px; list-style: none;
+  }
+  .artifact summary::-webkit-details-marker { display: none; }
+  .artifact summary small { color: var(--faint); font: 500 9px/1.5 var(--mono); text-transform: uppercase; }
+  .artifact pre {
+    margin: 0; padding: 12px; max-height: 300px; overflow: auto;
+    background: #22211e; color: #e8e3d9; font: 10.5px/1.6 var(--mono); white-space: pre-wrap;
+  }
+
+  @keyframes blink { 50% { opacity: .3; } }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
+  @media (max-width: 1100px) {
+    .shell { grid-template-columns: 224px minmax(0, 1fr); }
+    .side { display: none; }
+  }
+  @media (max-width: 760px) {
+    .shell { grid-template-columns: 1fr; }
+    .rail { display: none; }
+    .top { padding: 16px 18px 12px; }
+    .thread { padding: 6px 18px 20px; }
+    .composer { width: calc(100% - 36px); margin-bottom: 14px; }
+    .empty h2 { font-size: 30px; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .card, .soon i { animation: none; }
-    #field { display: none; }
+    *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   }
 </style>
 </head>
 <body>
-<canvas id="field" aria-hidden="true"></canvas>
-<div class="vignette"></div>
-<main>
-  <section class="card" aria-labelledby="title">
-    <div class="brand"><span class="sigil">◇</span> EVOLV · swarm protocol</div>
-    <h1 id="title">Many minds.<br><em>One organism.</em></h1>
-    <p class="lede">
-      Swarm mode lets a colony of EVOLV strands share a task, argue about it,
-      mutate in parallel, and converge on one answer. It is not here yet.
-      The field is already moving.
-    </p>
-    <div class="soon"><i></i> coming soon</div>
-    <div class="grid" aria-label="Swarm mode capabilities">
-      <div><small>parallel</small><b>fan-out thinking</b></div>
-      <div><small>shared</small><b>colony memory</b></div>
-      <div><small>converge</small><b>one answer</b></div>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand-row">
+      <a class="mark" href="/" title="back to the organism">◇</a>
+      <div><b>Swarm</b><span>beta · colony</span></div>
     </div>
-    <div class="actions">
-      <a class="back" href="/"><span>←</span> back to the organism</a>
-    </div>
-    <div class="foot">github.com/dxn111/EVOLV · swarm preview</div>
-  </section>
-</main>
+    <a class="back-link" href="/">← back to the organism</a>
+    <div class="rail-label">mission</div>
+    <p class="mission is-empty" id="mission">No mission yet.</p>
+    <div class="rail-label">agents <span id="agent-count">5</span></div>
+    <div class="agents" id="agents"></div>
+    <div class="rail-foot"><span class="dot" id="ws-dot"></span><span id="ws-label">connecting</span></div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <div>
+        <h1>Swarm mode</h1>
+        <p><span class="phase-dot" id="phase-dot"></span><span id="phase">idle · many minds, one organism</span></p>
+      </div>
+      <button class="btn" id="stop" disabled>stop swarm</button>
+    </header>
+
+    <section class="thread" id="thread" aria-live="polite">
+      <div class="thread-inner" id="thread-inner">
+        <div class="empty" id="empty">
+          <div class="orb">◇</div>
+          <h2>Give the swarm a mission.</h2>
+          <p>Five role-specialised agents share a transcript, build in turns, and settle decisions with explicit votes. You watch the colony think.</p>
+          <div class="chips">
+            <button class="chip" data-mission="Design a tiny focus timer that lives on the EVOLV canvas">a focus timer</button>
+            <button class="chip" data-mission="Build a local-first habit tracker with a weekly review">a habit tracker</button>
+            <button class="chip" data-mission="Design a self-healing docs pipeline for a small Go project">self-healing docs</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="error" id="error" hidden></div>
+
+    <form class="composer" id="composer">
+      <textarea id="mission-input" rows="1" maxlength="2000" placeholder="Ask the swarm to design, build, test and vote on something…" aria-label="Swarm mission"></textarea>
+      <div class="composer-foot">
+        <span>enter to start · shift+enter for a new line</span>
+        <button class="btn primary" id="run" type="submit">start swarm <span aria-hidden="true">↑</span></button>
+      </div>
+    </form>
+  </main>
+
+  <aside class="side">
+    <section class="panel">
+      <div class="panel-head"><span>polls</span><span id="poll-count">0</span></div>
+      <div id="polls"><p class="panel-empty">Polls appear here as the colony decides.</p></div>
+    </section>
+    <section class="panel grow">
+      <div class="panel-head"><span>artifacts</span><span id="artifact-count">0</span></div>
+      <div id="artifacts"><p class="panel-empty">Code, tests and the final decision land here.</p></div>
+    </section>
+  </aside>
+</div>
+
 <script>
-  (() => {
-    const canvas = document.getElementById('field');
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    let w = 0, h = 0, dpr = 1;
-    const dots = [];
-    const N = 72;
-    const pointer = { x: -9999, y: -9999 };
-    const rand = (a, b) => a + Math.random() * (b - a);
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const phaseEl = $('#phase');
+  const phaseDot = $('#phase-dot');
+  const missionEl = $('#mission');
+  const agentsEl = $('#agents');
+  const threadEl = $('#thread');
+  const threadInner = $('#thread-inner');
+  const emptyEl = $('#empty');
+  const pollsEl = $('#polls');
+  const artifactsEl = $('#artifacts');
+  const pollCount = $('#poll-count');
+  const artifactCount = $('#artifact-count');
+  const errorEl = $('#error');
+  const stopBtn = $('#stop');
+  const runBtn = $('#run');
+  const input = $('#mission-input');
+  const composer = $('#composer');
+  const wsDot = $('#ws-dot');
+  const wsLabel = $('#ws-label');
 
-    function resize() {
-      dpr = Math.min(2, devicePixelRatio || 1);
-      w = innerWidth; h = innerHeight;
-      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
-      canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  let state = null;
+  let running = false;
+  let ws = null;
+
+  const phaseLabels = {
+    idle: 'idle · many minds, one organism',
+    recruiting: 'recruiting the colony',
+    ideating: 'ideating · finding the shape',
+    voting: 'voting · choosing a direction',
+    coding: 'coding · building the chosen direction',
+    testing: 'testing · trying to break it',
+    reviewing: 'reviewing · arguing with the code',
+    shipping: 'voting · should this ship?',
+    judging: 'judging · writing the decision',
+    done: 'done · the colony has spoken',
+    stopped: 'stopped · the colony paused',
+    error: 'error · the colony hit a wall'
+  };
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function timeOf(s) {
+    if (!s) return '';
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  function roleOf(id) {
+    const agents = (state && state.agents) || [];
+    return agents.find(a => a.id === id) || { id, name: id, icon: '·', color: '#8a8174', blurb: '' };
+  }
+  function stripFence(text) {
+    return String(text || '')
+      .replace(/^\s*```[a-zA-Z0-9_-]*\s*$/gm, '')
+      .replace(/^\s*```\s*$/gm, '')
+      .trim();
+  }
+
+  function setWS(on) {
+    wsDot.classList.toggle('on', on);
+    wsLabel.textContent = on ? 'live · connected' : 'reconnecting…';
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    try {
+      ws = new WebSocket(proto + '://' + location.host + '/ws');
+    } catch { setTimeout(connect, 1500); return; }
+    ws.onopen = () => setWS(true);
+    ws.onclose = () => { setWS(false); setTimeout(connect, 1500); };
+    ws.onerror = () => {};
+    ws.onmessage = (event) => {
+      try {
+        const ev = JSON.parse(event.data);
+        if (ev.type === 'swarm:state' && ev.payload) render(ev.payload);
+      } catch {}
+    };
+  }
+
+  async function initial() {
+    try {
+      const res = await fetch('/api/swarm', { cache: 'no-store' });
+      if (res.ok) render(await res.json());
+    } catch {}
+  }
+
+  function renderAgents() {
+    agentsEl.replaceChildren();
+    const agents = state.agents || [];
+    for (const a of agents) {
+      const row = el('div', 'agent ' + (a.status || 'ready'));
+      const avatar = el('div', 'avatar', a.icon || '·');
+      avatar.style.color = a.color || 'var(--ink)';
+      const who = el('div', 'who');
+      who.append(el('b', null, a.name || a.id));
+      who.append(el('small', null, a.last || a.blurb || 'ready'));
+      row.append(avatar, who, el('span', 'pulse-dot'));
+      row.title = a.last || a.blurb || '';
+      agentsEl.append(row);
     }
+    $('#agent-count').textContent = String(agents.length);
+  }
 
-    function seed() {
-      dots.length = 0;
-      for (let i = 0; i < N; i++) {
-        dots.push({
-          x: rand(0, w), y: rand(0, h),
-          vx: rand(-.22, .22), vy: rand(-.22, .22),
-          r: rand(1.1, 2.6),
-          warm: Math.random() < .25
-        });
+  function renderMessages() {
+    const messages = state.messages || [];
+    if (emptyEl) emptyEl.hidden = messages.length > 0 || state.status === 'running';
+    // Remove previous messages, keep the empty state.
+    for (const old of [...threadInner.querySelectorAll('.msg')]) old.remove();
+    if (!messages.length) return;
+
+    let last = null;
+    for (const m of messages) {
+      const role = roleOf(m.role);
+      const art = el('article', 'msg kind-' + (m.kind || 'message'));
+      const avatar = el('div', 'avatar', role.icon || '·');
+      avatar.style.color = role.color || 'var(--ink)';
+      const main = el('div');
+      const who = el('div', 'who');
+      who.append(el('b', null, role.name || m.role));
+      who.append(el('span', null, (m.kind || 'says') + ' · ' + timeOf(m.time)));
+      main.append(who);
+      const body = el('div', 'body');
+      if (m.kind === 'code' || m.kind === 'test') {
+        body.textContent = stripFence(m.text);
+      } else {
+        body.textContent = m.text || '';
       }
+      main.append(body);
+      art.append(avatar, main);
+      threadInner.append(art);
+      last = art;
     }
+    // Only follow the live edge if the user is already there.
+    const nearBottom = threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight < 160;
+    if ((nearBottom || state.status === 'running' || state.status === 'done') && last) {
+      last.scrollIntoView({ block: 'end' });
+    }
+  }
 
-    function step() {
-      const cx = w * .5 + Math.sin(performance.now() / 4200) * w * .08;
-      const cy = h * .44 + Math.cos(performance.now() / 5200) * h * .05;
-      for (const d of dots) {
-        d.vx += (cx - d.x) * .00003;
-        d.vy += (cy - d.y) * .00003;
-        const dx = d.x - pointer.x, dy = d.y - pointer.y;
-        const m = Math.hypot(dx, dy);
-        if (m < 150 && m > 0) {
-          const push = (150 - m) / 150 * .08;
-          d.vx += dx / m * push; d.vy += dy / m * push;
+  function allPolls() {
+    const list = [...(state.polls || [])];
+    if (state.poll && !list.some(p => p.id === state.poll.id)) list.push(state.poll);
+    return list;
+  }
+
+  function renderPolls() {
+    pollsEl.replaceChildren();
+    const polls = allPolls();
+    pollCount.textContent = String(polls.length);
+    if (!polls.length) {
+      pollsEl.append(el('p', 'panel-empty', 'Polls appear here as the colony decides.'));
+      return;
+    }
+    for (const poll of polls) {
+      const box = el('div', 'poll');
+      box.append(el('div', 'q', poll.question));
+      const total = (poll.votes || []).length;
+      box.append(el('div', 'meta', (poll.open ? 'open' : 'closed') + ' · ' + total + ' vote' + (total === 1 ? '' : 's')));
+      (poll.options || []).forEach((option, index) => {
+        const votes = (poll.votes || []).filter(v => v.choice === index);
+        const pct = total ? Math.round((votes.length / total) * 100) : 0;
+        const opt = el('div', 'opt' + (!poll.open && poll.winner === index ? ' winner' : ''));
+        const top = el('div', 'opt-top');
+        top.append(el('span', null, (index + 1) + '. ' + option));
+        top.append(el('span', null, votes.length + '/' + total));
+        const bar = el('div', 'bar');
+        const fill = el('i');
+        fill.style.width = pct + '%';
+        bar.append(fill);
+        opt.append(top, bar);
+        if (votes.length && !poll.open) {
+          const reasons = el('div', 'reasons');
+          for (const v of votes) {
+            const role = roleOf(v.voter);
+            const reason = el('div', 'reason');
+            reason.append(el('b', null, role.name + ': '));
+            reason.append(document.createTextNode(v.reason || 'agrees'));
+            reasons.append(reason);
+          }
+          opt.append(reasons);
         }
-        d.vx += rand(-.012, .012); d.vy += rand(-.012, .012);
-        d.vx *= .992; d.vy *= .992;
-        d.x += d.vx; d.y += d.vy;
-        if (d.x < -20) d.x = w + 20; if (d.x > w + 20) d.x = -20;
-        if (d.y < -20) d.y = h + 20; if (d.y > h + 20) d.y = -20;
-      }
+        box.append(opt);
+      });
+      pollsEl.append(box);
     }
+  }
 
-    function draw() {
-      ctx.clearRect(0, 0, w, h);
-      for (let i = 0; i < dots.length; i++) {
-        for (let j = i + 1; j < dots.length; j++) {
-          const a = dots[i], b = dots[j];
-          const dist = Math.hypot(a.x - b.x, a.y - b.y);
-          if (dist > 118) continue;
-          ctx.globalAlpha = (1 - dist / 118) * .16;
-          ctx.strokeStyle = a.warm || b.warm ? '#d97757' : '#a8a49c';
-          ctx.lineWidth = .65;
-          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-        }
-      }
-      ctx.globalAlpha = 1;
-      for (const d of dots) {
-        const glow = d.warm ? 'rgba(217,119,87,.22)' : 'rgba(232,230,225,.10)';
-        ctx.beginPath(); ctx.arc(d.x, d.y, d.r * 5, 0, Math.PI * 2);
-        ctx.fillStyle = glow; ctx.fill();
-        ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
-        ctx.fillStyle = d.warm ? '#d97757' : 'rgba(232,230,225,.68)'; ctx.fill();
-      }
+  function renderArtifacts() {
+    artifactsEl.replaceChildren();
+    const artifacts = state.artifacts || [];
+    artifactCount.textContent = String(artifacts.length);
+    if (!artifacts.length) {
+      artifactsEl.append(el('p', 'panel-empty', 'Code, tests and the final decision land here.'));
+      return;
     }
-
-    let last = 0;
-    function frame(t) {
-      if (t - last > 32) { step(); draw(); last = t; }
-      requestAnimationFrame(frame);
+    for (const a of artifacts) {
+      const details = el('details', 'artifact');
+      const summary = el('summary');
+      summary.append(el('span', null, a.name));
+      summary.append(el('small', null, a.kind || 'artifact'));
+      const pre = el('pre', null, a.content || '');
+      details.append(summary, pre);
+      artifactsEl.append(details);
     }
+  }
 
-    addEventListener('resize', () => { resize(); seed(); if (reduce) draw(); });
-    addEventListener('pointermove', e => { pointer.x = e.clientX; pointer.y = e.clientY; }, { passive: true });
-    addEventListener('pointerleave', () => { pointer.x = -9999; pointer.y = -9999; });
+  function render(next) {
+    state = next || state;
+    if (!state) return;
+    running = state.status === 'running';
+    missionEl.textContent = state.mission || 'No mission yet.';
+    missionEl.classList.toggle('is-empty', !state.mission);
+    phaseEl.textContent = phaseLabels[state.phase] || (state.phase + ' · ' + (state.status || ''));
+    phaseDot.classList.toggle('busy', running);
+    phaseDot.style.background = state.status === 'error' ? 'var(--danger)' : '';
+    runBtn.disabled = running;
+    stopBtn.disabled = !running;
+    input.disabled = running;
+    if (state.error) {
+      errorEl.hidden = false;
+      errorEl.textContent = state.error;
+    } else {
+      errorEl.hidden = true;
+      errorEl.textContent = '';
+    }
+    renderAgents();
+    renderMessages();
+    renderPolls();
+    renderArtifacts();
+  }
 
-    resize(); seed();
-    if (reduce) { draw(); } else { requestAnimationFrame(frame); }
-  })();
+  async function startSwarm(mission) {
+    errorEl.hidden = true;
+    runBtn.disabled = true;
+    try {
+      const res = await fetch('/api/swarm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mission })
+      });
+      const text = await res.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch {}
+      if (!res.ok) throw new Error((data && data.error) || 'could not start the swarm');
+      // The WebSocket state event can arrive before this POST response. Never
+      // let a stale "recruiting" snapshot overwrite a live "ideating" one.
+      if (data) {
+        if (!state || state.id !== data.id) render(data);
+        else { state.mission = data.mission; render(state); }
+      }
+      input.value = '';
+      autoGrow();
+      input.focus();
+      setTimeout(initial, 900);
+    } catch (e) {
+      errorEl.hidden = false;
+      errorEl.textContent = e.message || String(e);
+      runBtn.disabled = false;
+    }
+  }
+
+  async function stopSwarm() {
+    stopBtn.disabled = true;
+    try { await fetch('/api/swarm/stop', { method: 'POST' }); } catch {}
+  }
+
+  function autoGrow() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(160, input.scrollHeight) + 'px';
+  }
+
+  composer.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const mission = input.value.trim();
+    if (!mission) { input.focus(); return; }
+    startSwarm(mission);
+  });
+  input.addEventListener('input', autoGrow);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      composer.requestSubmit();
+    }
+  });
+  stopBtn.addEventListener('click', stopSwarm);
+  for (const chip of document.querySelectorAll('[data-mission]')) {
+    chip.addEventListener('click', () => {
+      input.value = chip.dataset.mission;
+      autoGrow();
+      input.focus();
+    });
+  }
+
+  connect();
+  initial();
+  autoGrow();
+})();
 </script>
 </body>
 </html>

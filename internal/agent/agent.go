@@ -117,6 +117,14 @@ func (a *Agent) ProviderModel() (string, string) {
 	return name, a.Model
 }
 
+// ProviderSnapshot returns the active provider and model for a swarm that
+// needs a stable handle without reaching into the agent's mutex.
+func (a *Agent) ProviderSnapshot() (providers.Provider, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.prov, a.Model
+}
+
 // SetProvider hot-swaps the model backend mid-life.
 func (a *Agent) SetProvider(p providers.Provider, model string) {
 	a.mu.Lock()

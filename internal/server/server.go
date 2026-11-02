@@ -29,6 +29,7 @@ import (
 	"github.com/dxn111/EVOLV/internal/bus"
 	"github.com/dxn111/EVOLV/internal/candidate"
 	"github.com/dxn111/EVOLV/internal/providers"
+	"github.com/dxn111/EVOLV/internal/swarm"
 	"github.com/dxn111/EVOLV/internal/update"
 	"github.com/dxn111/EVOLV/internal/workspace"
 )
@@ -55,6 +56,7 @@ type Server struct {
 	errors      atomic.Int64
 	wsMu        sync.Mutex
 	conns       map[*websocket.Conn]struct{}
+	swarm       *swarm.Engine
 	done        chan struct{}
 	closeOnce   sync.Once
 	latency     latencyHistogram
@@ -71,6 +73,14 @@ func New(ws *workspace.W, b *bus.Bus, ag *agent.Agent, reg *providers.Registry) 
 			CheckOrigin: allowedOrigin, // same-origin browser sockets only
 		},
 	}
+	s.swarm = swarm.New(func() (providers.Provider, string) {
+		if s.ag == nil {
+			return nil, ""
+		}
+		return s.ag.ProviderSnapshot()
+	}, func(event string, payload any) {
+		s.bus.Publish(event, payload)
+	})
 	s.loadAgentProfiles()
 	s.routes()
 	return s
@@ -80,6 +90,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.handleUI)
 	s.mux.HandleFunc("/ws", s.handleWS)
 	s.mux.HandleFunc("/api/chat", s.handleChat)
+	s.mux.HandleFunc("/api/swarm", s.handleSwarm)
+	s.mux.HandleFunc("/api/swarm/stop", s.handleSwarmStop)
 	s.mux.HandleFunc("/api/history", s.handleHistory)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/models", s.handleModels)
@@ -137,6 +149,10 @@ func (s *Server) Close() {
 		s.genCancel = nil
 	}
 	s.genMu.Unlock()
+
+	if s.swarm != nil {
+		s.swarm.Stop()
+	}
 }
 
 // liveCount tracks WS clients (delta +1/-1, returns new total).
@@ -376,6 +392,52 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		"limit":    limit,
 		"offset":   offset,
 	})
+}
+
+func (s *Server) handleSwarm(w http.ResponseWriter, r *http.Request) {
+	if s.swarm == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "swarm runtime unavailable")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(s.swarm.Snapshot())
+	case http.MethodPost:
+		var in struct {
+			Mission string `json:"mission"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || strings.TrimSpace(in.Mission) == "" {
+			writeJSONError(w, http.StatusBadRequest, "mission is required")
+			return
+		}
+		st, err := s.swarm.Start(r.Context(), in.Mission)
+		if err != nil {
+			code := http.StatusBadRequest
+			if strings.Contains(err.Error(), "already running") {
+				code = http.StatusConflict
+			}
+			writeJSONError(w, code, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(w).Encode(st)
+	default:
+		http.Error(w, "GET or POST only", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleSwarmStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.swarm != nil {
+		s.swarm.Stop()
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
 func (s *Server) agentFor(id string) *agent.Agent {

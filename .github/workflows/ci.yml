@@ -141,7 +141,8 @@ jobs:
           curl -fsS http://127.0.0.1:17391/api/metrics | grep -q '^evolv_up 1$'
           curl -fsS 'http://127.0.0.1:17391/api/history?limit=1' | grep -q '"total":0'
           curl -fsS http://127.0.0.1:17391/ | grep -qi '<!doctype html>'
-          curl -fsS http://127.0.0.1:17391/swarm | grep -qi 'coming soon'
+          curl -fsS http://127.0.0.1:17391/swarm | grep -qi 'swarm mode'
+          curl -fsS http://127.0.0.1:17391/api/swarm | grep -q '"agents"'
           test -x /tmp/evolv-smoke
           /tmp/evolv-smoke --version | grep -q '^evolv '
           /tmp/evolv-smoke --help | grep -q 'evolv download'

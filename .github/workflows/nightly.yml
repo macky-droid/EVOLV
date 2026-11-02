@@ -87,3 +87,26 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o "/tmp/evolv-${GOOS}-${GOARCH}" ./cmd/evolv
+
+  platform:
+    name: platform unit / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+
+      - name: Pure package tests
+        timeout-minutes: 15
+        run: go test ./internal/workspace ./internal/redact ./internal/docsgen ./internal/providers -count=1 -timeout=10m
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOCACHE GOMODCACHE
+          git status --short

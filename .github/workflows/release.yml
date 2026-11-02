@@ -128,8 +128,6 @@ jobs:
   release:
     name: publish
     needs: [validate, build]
-    # Manual runs can validate the full artifact set without publishing.
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -179,19 +177,31 @@ jobs:
             exit 1
           fi
 
+      - name: Generate SBOM
+        timeout-minutes: 10
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/evolv.spdx.json
+          upload-artifact: false
+
       - name: Checksums
         run: |
-          sha256sum dist/evolv_* > dist/checksums.txt
+          sha256sum dist/evolv_* dist/evolv.spdx.json > dist/checksums.txt
           sha256sum -c dist/checksums.txt
 
       - name: Attest build provenance
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/evolv_*
+            dist/evolv.spdx.json
             dist/checksums.txt
 
       - name: Publish GitHub release
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ needs.validate.outputs.version }}
@@ -200,6 +210,7 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/evolv_*
+            dist/evolv.spdx.json
             dist/checksums.txt
 
       - name: Diagnostics on failure

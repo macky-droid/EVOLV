@@ -8,14 +8,16 @@ a human approval or an unbounded loop.
 
 | Workflow | Trigger | Purpose | Max runtime |
 |---|---|---|---|
-| `ci.yml` | push `main`, PR, merge group, manual | format, tidy, docs freshness, tests + coverage, real-server smoke on Linux + macOS, race, Go compat, cross-build, workflow/shell lint | 20 min/job |
-| `release.yml` | `v*` tag, manual | validate, build 6 targets in parallel, smoke-test the binary, checksum, attest provenance, publish | 20 min/job |
-| `nightly.yml` | daily 03:17 UTC, manual | repeated shuffled tests (`-count=3`), full race detector, cross-build | 35 min/job |
+| `ci.yml` | push `main`, PR, merge group, manual | format, tidy, docs freshness, tests + coverage gate, real-server smoke on Linux + macOS, race, Go compat, cross-build, workflow metadata audit + actionlint/shell lint | 20 min/job |
+| `release.yml` | `v*` tag, manual | validate, build 6 targets in parallel, SBOM, smoke-test the binary, checksum, attest provenance, publish | 20 min/job |
+| `nightly.yml` | daily 03:17 UTC, manual | repeated shuffled tests (`-count=3`), full race detector, cross-build, macOS/Windows pure-package tests | 35 min/job |
 | `codeql.yml` | push `main`, weekly, manual | CodeQL static analysis for Go | 30 min |
 | `security.yml` | push `main`, PR, weekly, manual | `govulncheck` against the live vulnerability database | 15 min |
+| `scorecard.yml` | push `main`, weekly, manual | OpenSSF Scorecard + SARIF upload | 20 min |
 | `dependency-review.yml` | pull request | fail on high-severity dependency changes | 10 min |
 | `benchmark.yml` | weekly, manual | redaction benchmarks + step summary + artifact | 20 min |
 | `installer.yml` | changes to `install.sh`, manual | bash syntax and `--help` on Linux + macOS | 10 min |
+| `labeler.yml` | pull request | label backend/workflows/docs/assets/dependencies changes | 5 min |
 
 `ci.yml` uses the composite action in `.github/actions/setup-go/` so every job
 installs Go from `go.mod`, enables the module/build cache, and prints the
@@ -34,7 +36,7 @@ toolchain it actually used.
 - **No `sleep`, `watch`, or polling loops.** Workflows are event-driven and
   finite.
 - **Manual releases can be dry-run.** `release.yml` accepts `dry_run: true`;
-  it validates and builds every artifact without creating a tag or release.
+  it validates, builds and SBOMs every artifact without creating a tag or release.
 - **`GOTOOLCHAIN=local`** is set in CI, release, and nightly. A missing Go
   toolchain fails immediately instead of downloading an unexpected one.
 - **Security and release use the latest `1.26.x` patch**, not the bare `go.mod`
@@ -43,28 +45,34 @@ toolchain it actually used.
 - **`GOFLAGS=-mod=readonly`** prevents CI from silently editing `go.mod` or
   `go.sum`; the separate `go mod tidy -diff` check reports drift.
 - **Artifacts are verified before publish.** The release job checks all six
-  binary names, runs `evolv --version`, generates checksums, and verifies
-  them with `sha256sum -c` before attesting and uploading.
+  binary names, runs `evolv --version`, generates an SPDX SBOM, creates
+  checksums, and verifies them with `sha256sum -c` before attesting and
+  uploading.
 - **The smoke job boots the real binary.** It builds `./cmd/evolv`, starts it
-  on a temporary home, probes `/api/health`, `/api/metrics`, `/api/history`, the UI and the CLI
-  (`--version`, `--help`, `status`), then sends SIGTERM and fails if the
-  process does not drain and exit.
+  on a temporary home, probes `/api/health`, `/api/metrics`, `/api/history`,
+  the UI and the CLI (`--version`, `--help`, `status`), then sends SIGTERM
+  and fails if the process does not drain and exit.
+- **Workflow metadata is audited.** The lint job rejects a workflow without
+  `permissions`, `concurrency`, or a per-job `timeout-minutes`, and rejects any
+  remote action that is not pinned to a version tag or a full commit SHA.
+- **Coverage has a floor.** The test job fails below **50%** total statement
+  coverage, so a large untested backend addition cannot land silently.
 
 ## What runs on every PR
 
 Required-in-practice checks:
 
 1. `format / tidy / docs` — gofmt, `go mod tidy -diff`, generated docs current.
-2. `test / coverage` — full suite, shuffled, coverage artifact.
-3. `boot / api smoke` — build the binary, boot it on a temp home on Linux and macOS, probe health/metrics/UI, reject evil Origins/Hosts, and assert clean SIGTERM drain.
+2. `test / coverage` — full suite, shuffled, coverage artifact, 50% floor.
+3. `boot / api smoke` — build the binary, boot it on a temp home on Linux and macOS, probe health/metrics/history/UI and the CLI, reject evil Origins/Hosts, and assert clean SIGTERM drain.
 4. `race detector` — full module with `-race`.
 5. `go 1.26.x` and `go stable` — compatibility.
 6. `cross-build` — all six release targets.
-7. `workflow / shell syntax` — YAML parses, `actionlint` passes, shell scripts parse.
+7. `workflow / shell syntax` — YAML parses, metadata audit, `actionlint`, shell scripts parse.
 8. `govulncheck` — known vulnerabilities in the module or stdlib fail.
 9. `dependency review` — high-severity dependency changes fail.
 
-CodeQL runs on `main` and weekly; it is not duplicated on every PR.
+CodeQL and OpenSSF Scorecard run on `main` and weekly; they are not duplicated on every PR. Nightly adds macOS/Windows pure-package tests.
 
 ## Local equivalents
 

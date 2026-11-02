@@ -73,6 +73,16 @@ jobs:
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
+      - name: Coverage gate (>= 50%)
+        timeout-minutes: 2
+        run: |
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')"
+          echo "total coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { exit (t+0 >= 50) ? 0 : 1 }' || {
+            echo "::error::coverage ${total}% is below the 50% floor"
+            exit 1
+          }
+
       - name: Build
         timeout-minutes: 10
         run: go build ./...
@@ -269,6 +279,10 @@ jobs:
               puts "ok #{f}"
             end
           '
+
+      - name: Audit workflow metadata
+        timeout-minutes: 2
+        run: ruby .github/scripts/audit_workflows.rb
 
       - name: actionlint
         timeout-minutes: 5

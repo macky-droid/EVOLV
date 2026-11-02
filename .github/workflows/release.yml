@@ -9,30 +9,34 @@ on:
         description: "Release version, e.g. v0.30.0 (required for manual runs)"
         required: true
         type: string
+      dry_run:
+        description: "Build and validate the artifacts, but do not publish a release"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
-  id-token: write # build provenance attestation
-  attestations: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  CGO_ENABLED: "0"
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
+
 jobs:
-  build:
+  validate:
+    name: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Test before shipping
-        run: go test ./... -count=1 -shuffle=on -timeout=10m
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
 
       - name: Resolve version
         id: version
@@ -45,55 +49,157 @@ jobs:
           fi
           version="${raw#v}"
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "invalid release version: $raw (expected vMAJOR.MINOR.PATCH)" >&2
+            echo "::error::invalid release version: $raw (expected vMAJOR.MINOR.PATCH)"
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Build all platforms
+      - name: Test
+        timeout-minutes: 15
+        run: go test ./... -count=1 -shuffle=on -timeout=10m
+
+      - name: Vet and build
+        timeout-minutes: 10
+        run: |
+          go vet ./...
+          go build ./...
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOCACHE GOMODCACHE
+          git status --short
+
+  build:
+    name: build / ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+
+      - name: Build
+        timeout-minutes: 8
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           mkdir -p dist
-          build() {
-            local os=$1 arch=$2
-            local out="dist/evolv_${os}_${arch}"
-            [ "$os" = "windows" ] && out="${out}.exe"
-            echo "building $out (v$VERSION)"
-            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
-              -ldflags="-s -w -X github.com/dxn111/EVOLV/internal/workspace.Version=$VERSION" \
-              -o "$out" ./cmd/evolv
-          }
-          build linux amd64; build linux arm64
-          build darwin amd64; build darwin arm64
-          build windows amd64; build windows arm64
+          out="dist/evolv_${GOOS}_${GOARCH}"
+          [ "$GOOS" = "windows" ] && out="${out}.exe"
+          echo "building $out (v$VERSION)"
+          go build -trimpath \
+            -ldflags="-s -w -X github.com/dxn111/EVOLV/internal/workspace.Version=$VERSION" \
+            -o "$out" ./cmd/evolv
+          ls -lh "$out"
 
-      - name: Smoke-test the release binary
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: evolv-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/evolv_*
+          retention-days: 1
+          if-no-files-found: error
+
+  release:
+    name: publish
+    needs: [validate, build]
+    # Manual runs can validate the full artifact set without publishing.
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: evolv-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify artifact set
+        timeout-minutes: 3
+        run: |
+          expected="
+            evolv_linux_amd64
+            evolv_linux_arm64
+            evolv_darwin_amd64
+            evolv_darwin_arm64
+            evolv_windows_amd64.exe
+            evolv_windows_arm64.exe
+          "
+          missing=0
+          for f in $expected; do
+            if [ ! -f "dist/$f" ]; then
+              echo "::error::missing release artifact: dist/$f"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+          ls -lh dist
+
+      - name: Verify the Linux binary reports the release version
+        timeout-minutes: 3
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           chmod +x dist/evolv_linux_amd64
           got="$(dist/evolv_linux_amd64 --version)"
           want="evolv $VERSION"
           if [ "$got" != "$want" ]; then
-            echo "version mismatch: got '$got', want '$want'" >&2
+            echo "::error::version mismatch: got '$got', want '$want'"
             exit 1
           fi
 
       - name: Checksums
-        run: sha256sum dist/evolv_* > dist/checksums.txt
+        run: |
+          sha256sum dist/evolv_* > dist/checksums.txt
+          sha256sum -c dist/checksums.txt
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/evolv_*
             dist/checksums.txt
 
-      - name: Release
-        uses: softprops/action-gh-release@v2
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
+          tag_name: v${{ needs.validate.outputs.version }}
+          name: v${{ needs.validate.outputs.version }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
             dist/evolv_*
             dist/checksums.txt
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          ls -lhR dist || true
+          find dist -maxdepth 1 -type f -printf '%f %s bytes\n' 2>/dev/null || true

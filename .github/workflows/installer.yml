@@ -1,0 +1,45 @@
+name: installer
+
+on:
+  push:
+    paths:
+      - install.sh
+      - .github/workflows/installer.yml
+  pull_request:
+    paths:
+      - install.sh
+      - .github/workflows/installer.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: shell / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bash syntax
+        timeout-minutes: 2
+        run: bash -n install.sh
+
+      - name: Help path
+        timeout-minutes: 2
+        run: ./install.sh --help
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          bash --version | head -1
+          uname -a

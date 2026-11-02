@@ -1,0 +1,89 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
+
+jobs:
+  stress:
+    name: repeated shuffled tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+
+      - name: Test three times (new shuffle seed each run)
+        timeout-minutes: 30
+        run: go test ./... -count=3 -shuffle=on -timeout=25m
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOCACHE GOMODCACHE
+          git status --short
+
+  race:
+    name: full race detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+
+      - name: Race test
+        timeout-minutes: 30
+        run: go test -race ./... -count=1 -timeout=25m
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOCACHE GOMODCACHE
+          git status --short
+
+  cross:
+    name: nightly cross-build / ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+
+      - name: Build
+        timeout-minutes: 5
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -o /tmp/evolv-$GOOS-$GOARCH ./cmd/evolv

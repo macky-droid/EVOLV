@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -15,55 +16,129 @@ concurrency:
 
 env:
   CGO_ENABLED: "0"
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
 
 jobs:
-  test:
-    name: test / vet / format
+  format:
+    name: format / tidy / docs
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Check formatting
+      - name: gofmt
+        timeout-minutes: 5
         run: |
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
-            echo "These files are not gofmt'd:"
+            echo "::error::These files need gofmt:"
             echo "$unformatted"
             exit 1
           fi
 
-      - name: Vet
-        run: go vet ./...
+      - name: go.mod / go.sum are tidy
+        timeout-minutes: 5
+        run: go mod tidy -diff
+
+      - name: Generated docs are current
+        timeout-minutes: 5
+        run: |
+          go run ./cmd/evolv-docs
+          if ! git diff --exit-code -- docs/index.html; then
+            echo "::error::docs/index.html is stale; run: go run ./cmd/evolv-docs"
+            exit 1
+          fi
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOCACHE GOMODCACHE
+          git status --short
+
+  test:
+    name: test / coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
 
       - name: Test
-        run: go test ./... -count=1 -shuffle=on -timeout=10m
+        timeout-minutes: 15
+        run: go test ./... -count=1 -shuffle=on -timeout=10m -covermode=atomic -coverprofile=coverage.out
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out | tail -1
 
       - name: Build
+        timeout-minutes: 10
         run: go build ./...
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOCACHE GOMODCACHE
+          git status --short
 
   race:
     name: race detector
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # -race needs cgo; the workflow-wide CGO_ENABLED=0 is for release builds.
+    timeout-minutes: 25
     env:
       CGO_ENABLED: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
 
-      - uses: actions/setup-go@v5
+      - name: Race test (whole module)
+        timeout-minutes: 20
+        run: go test -race ./... -count=1 -timeout=15m
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOCACHE GOMODCACHE
+          git status --short
+
+  compat:
+    name: go ${{ matrix.go }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.26.x", "stable"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
           cache: true
+          cache-dependency-path: go.sum
 
-      - name: Race test (agent, server, workspace)
-        run: go test -race ./internal/agent ./internal/server ./internal/workspace -count=1
+      - name: Test
+        timeout-minutes: 15
+        run: go test ./... -count=1 -timeout=10m
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          go version
+          go env GOOS GOARCH CGO_ENABLED GOCACHE GOMODCACHE
 
   cross:
     name: cross-build / ${{ matrix.goos }}-${{ matrix.goarch }}
@@ -86,15 +161,53 @@ jobs:
           - goos: windows
             goarch: arm64
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
 
       - name: Build
+        timeout-minutes: 5
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -o /tmp/evolv-$GOOS-$GOARCH ./cmd/evolv
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: go env GOOS GOARCH CGO_ENABLED
+
+  workflow-lint:
+    name: workflow / shell syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+
+      - name: Validate YAML
+        timeout-minutes: 2
+        run: |
+          ruby -e '
+            require "yaml"
+            files = Dir[".github/**/*.{yml,yaml}"]
+            abort "no workflow files found" if files.empty?
+            files.sort.each do |f|
+              YAML.load_file(f)
+              puts "ok #{f}"
+            end
+          '
+
+      - name: actionlint
+        timeout-minutes: 5
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -color
+
+      - name: Validate shell scripts
+        timeout-minutes: 2
+        run: |
+          bash -n install.sh
+          for f in scripts/*.sh; do
+            [ -e "$f" ] || continue
+            bash -n "$f"
+            echo "ok $f"
+          done

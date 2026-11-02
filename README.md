@@ -300,6 +300,8 @@ Skills are yours too: add a `.md` under `~/.evolv/workspace/skills/` (optional Y
 - **goja** (pure-Go JS interpreter) executes the tools/plugins the agent writes — no cgo, cross-compiles to every platform
 - **150ms filesystem watcher** + WebSocket fan-out = "did it just…? yes it did"
 - **Per-plugin goja sandboxes** with a live event bus (`evolv.on` / `evolv.every`) — plugins react while the organism thinks
+- **Operational surface** — `GET /api/health` reports uptime, provider/model, request/error counts, live sockets and snapshots; `GET /api/metrics` exposes the same counters in Prometheus format
+- **Shutdown that behaves** — HTTP header/read/idle timeouts, bounded request bodies, panic recovery, and a SIGTERM drain that closes live sockets before exiting
 - Everything local. Nothing phones home except the model provider you choose.
 
 ---
@@ -413,7 +415,7 @@ make test      # tests only
 make cross     # verify every release target still builds
 ```
 
-CI (`.github/workflows/ci.yml`) runs formatting, vet, tests, the race detector on the core packages, and cross-builds Linux/macOS/Windows on every push and pull request. Releases are built from `go.mod`'s Go version and tested before the binaries are published.
+CI (`.github/workflows/ci.yml`) runs formatting, tidy/docs checks, tests + coverage, a real-server boot/SIGTERM smoke, the full-module race detector, Go version compatibility, and cross-builds Linux/macOS/Windows on every push and pull request. Releases are validated with the latest patched Go 1.26.x, smoke-tested, checksummed and provenance-attested before the binaries are published.
 
 Ideas that would be amazing: new protocol actions, a genome inspector UI, evolution replay/branching, security linting for evolved components, ports to new platforms. Open an issue or ping me directly — **I answer everything.**
 

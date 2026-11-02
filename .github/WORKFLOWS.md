@@ -8,7 +8,7 @@ a human approval or an unbounded loop.
 
 | Workflow | Trigger | Purpose | Max runtime |
 |---|---|---|---|
-| `ci.yml` | push `main`, PR, merge group, manual | format, tidy, docs freshness, tests + coverage, race, Go compat, cross-build, workflow/shell lint | 20 min/job |
+| `ci.yml` | push `main`, PR, merge group, manual | format, tidy, docs freshness, tests + coverage, real-server smoke, race, Go compat, cross-build, workflow/shell lint | 20 min/job |
 | `release.yml` | `v*` tag, manual | validate, build 6 targets in parallel, smoke-test the binary, checksum, attest provenance, publish | 20 min/job |
 | `nightly.yml` | daily 03:17 UTC, manual | repeated shuffled tests (`-count=3`), full race detector, cross-build | 35 min/job |
 | `codeql.yml` | push `main`, weekly, manual | CodeQL static analysis for Go | 30 min |
@@ -45,6 +45,9 @@ toolchain it actually used.
 - **Artifacts are verified before publish.** The release job checks all six
   binary names, runs `evolv --version`, generates checksums, and verifies
   them with `sha256sum -c` before attesting and uploading.
+- **The smoke job boots the real binary.** It builds `./cmd/evolv`, starts it
+  on a temporary home, probes `/api/health`, `/api/metrics` and the UI, then
+  sends SIGTERM and fails if the process does not drain and exit.
 
 ## What runs on every PR
 
@@ -52,12 +55,13 @@ Required-in-practice checks:
 
 1. `format / tidy / docs` — gofmt, `go mod tidy -diff`, generated docs current.
 2. `test / coverage` — full suite, shuffled, coverage artifact.
-3. `race detector` — full module with `-race`.
-4. `go 1.26.x` and `go stable` — compatibility.
-5. `cross-build` — all six release targets.
-6. `workflow / shell syntax` — YAML parses, `actionlint` passes, shell scripts parse.
-7. `govulncheck` — known vulnerabilities in the module or stdlib fail.
-8. `dependency review` — high-severity dependency changes fail.
+3. `boot / api smoke` — build the binary, boot it on a temp home, probe health, metrics and the UI.
+4. `race detector` — full module with `-race`.
+5. `go 1.26.x` and `go stable` — compatibility.
+6. `cross-build` — all six release targets.
+7. `workflow / shell syntax` — YAML parses, `actionlint` passes, shell scripts parse.
+8. `govulncheck` — known vulnerabilities in the module or stdlib fail.
+9. `dependency review` — high-severity dependency changes fail.
 
 CodeQL runs on `main` and weekly; it is not duplicated on every PR.
 

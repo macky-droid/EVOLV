@@ -93,6 +93,59 @@ jobs:
           go env GOOS GOARCH CGO_ENABLED GOCACHE GOMODCACHE
           git status --short
 
+  smoke:
+    name: boot / api smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+
+      - name: Build binary
+        timeout-minutes: 5
+        run: go build -trimpath -o /tmp/evolv-smoke ./cmd/evolv
+
+      - name: Boot and probe the real server
+        timeout-minutes: 5
+        run: |
+          home="$(mktemp -d)"
+          env HOME="$home" DISPLAY="" /tmp/evolv-smoke --port 17391 --no-open >/tmp/evolv-smoke.log 2>&1 &
+          pid=$!
+          cleanup() { kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; }
+          trap cleanup EXIT
+
+          health=""
+          for ((i = 0; i < 60; i++)); do
+            if health="$(curl -fsS http://127.0.0.1:17391/api/health 2>/dev/null)"; then
+              break
+            fi
+            sleep 0.25
+          done
+          test -n "$health"
+          echo "$health"
+          echo "$health" | grep -q '"status":"alive"'
+          curl -fsS http://127.0.0.1:17391/api/metrics | grep -q '^evolv_up 1$'
+          curl -fsS http://127.0.0.1:17391/ | grep -qi '<!doctype html>'
+          curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:17391/api/health | grep -q '^200$'
+
+          # SIGTERM must drain and exit cleanly, not hang or die on a signal.
+          kill -TERM "$pid"
+          for ((i = 0; i < 50; i++)); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "server did not stop after SIGTERM"
+            exit 1
+          fi
+          wait "$pid"
+          grep -q "organism paused" /tmp/evolv-smoke.log
+          trap - EXIT
+
+      - name: Server log on failure
+        if: failure()
+        run: cat /tmp/evolv-smoke.log || true
+
   race:
     name: race detector
     runs-on: ubuntu-latest

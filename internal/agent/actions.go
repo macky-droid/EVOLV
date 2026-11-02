@@ -1230,12 +1230,12 @@ func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
 // group them ("it dreamt N times while you were away") and the ledger tells
 // prompted work from autonomous work.
 func (a *Agent) commit(kind, name, path, desc string) {
-	a.evolution++
+	n := a.evolution.Add(1)
 	desc = redact.Redact(desc)
 	name = redact.Redact(name)
 	path = redact.Redact(path)
 	entry := map[string]any{
-		"n": a.evolution, "kind": kind, "name": name, "path": path, "description": desc,
+		"n": n, "kind": kind, "name": name, "path": path, "description": desc,
 	}
 	if a.Dreaming() {
 		entry["dream"] = true

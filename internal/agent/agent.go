@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dxn111/EVOLV/internal/bus"
@@ -30,7 +31,7 @@ type Agent struct {
 	mu        sync.Mutex
 	history   []providers.Message
 	js        *JSRuntime
-	evolution int // mutation counter
+	evolution atomic.Int64 // mutation counter, safe across dream + chat
 	maxLoops  int
 	profile   *Profile
 
@@ -99,6 +100,19 @@ func (a *Agent) ProviderName() string {
 	return a.prov.Name()
 }
 
+// ProviderModel returns the active backend and model atomically. Callers that
+// display status (health, hello frames) should not read Model directly while a
+// settings change can swap it.
+func (a *Agent) ProviderModel() (string, string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	name := "unknown"
+	if a.prov != nil {
+		name = a.prov.Name()
+	}
+	return name, a.Model
+}
+
 // SetProvider hot-swaps the model backend mid-life.
 func (a *Agent) SetProvider(p providers.Provider, model string) {
 	a.mu.Lock()
@@ -117,7 +131,7 @@ func (a *Agent) Reset() {
 }
 
 // EvolutionCount returns how many mutations have happened.
-func (a *Agent) EvolutionCount() int { return a.evolution }
+func (a *Agent) EvolutionCount() int { return int(a.evolution.Load()) }
 
 // ReloadGrownCode re-reads tools and plugins from the genome (after rollback).
 func (a *Agent) ReloadGrownCode() { a.js.LoadAll() }
@@ -225,7 +239,7 @@ func (a *Agent) SystemPrompt() string {
 	}
 	b.WriteString("\n\n## ORGANISM STATE\n")
 	b.WriteString("- " + a.ws.SystemInfo() + "\n")
-	b.WriteString(fmt.Sprintf("- mutations committed: %d\n", a.evolution))
+	b.WriteString(fmt.Sprintf("- mutations committed: %d\n", a.EvolutionCount()))
 	if p := a.ws.Config.ProjectDir; p != "" {
 		b.WriteString(fmt.Sprintf("- project root: %s\n", p))
 	}
@@ -355,9 +369,20 @@ func (a *Agent) Chat(ctx context.Context, userMsg string) string {
 	if !isDream {
 		a.lastAct = time.Now()
 	}
+	prov, model := a.prov, a.Model
 	a.history = append(a.history, providers.Message{Role: "user", Content: userMsg})
 	hist := append([]providers.Message{}, a.history...)
 	a.mu.Unlock()
+
+	if prov == nil {
+		msg := "\n\n⚠️ **model error**: no provider is configured. Open Settings and choose a model.\n"
+		a.bus.Publish("agent:token", map[string]string{"text": msg})
+		a.mu.Lock()
+		a.history = append(a.history, providers.Message{Role: "assistant", Content: msg})
+		a.mu.Unlock()
+		a.saveMemory()
+		return msg
+	}
 
 	final := ""
 	for loop := 0; loop < a.maxLoops; loop++ {
@@ -375,13 +400,13 @@ func (a *Agent) Chat(ctx context.Context, userMsg string) string {
 				a.bus.Publish("agent:reasoning", map[string]string{"text": d.Reasoning})
 			}
 		}
-		text, err := a.prov.Stream(ctx, a.Model, msgs, stream)
+		text, err := prov.Stream(ctx, model, msgs, stream)
 		if err != nil && ctx.Err() == nil {
 			// free anonymous gateways hiccup constantly; one quiet
 			// retry before surfacing the error to the user
 			a.bus.Publish("agent:token", map[string]string{"text": "…\n\n"})
 			time.Sleep(1500 * time.Millisecond)
-			text, err = a.prov.Stream(ctx, a.Model, msgs, stream)
+			text, err = prov.Stream(ctx, model, msgs, stream)
 		}
 		if err != nil {
 			errMsg := fmt.Sprintf("\n\n⚠️ **model error**: `%s`\n\nTry another model in Settings — free anonymous models rotate often.", err.Error())

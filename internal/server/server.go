@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -47,12 +48,19 @@ type Server struct {
 	agents      map[string]*agent.Agent
 	profiles    map[string]agent.Profile
 	activeAgent string
+	startedAt   time.Time
+	requests    atomic.Int64
+	errors      atomic.Int64
+	wsMu        sync.Mutex
+	conns       map[*websocket.Conn]struct{}
 }
 
 // New builds the server.
 func New(ws *workspace.W, b *bus.Bus, ag *agent.Agent, reg *providers.Registry) *Server {
 	s := &Server{
 		ws: ws, bus: b, ag: ag, reg: reg, mux: http.NewServeMux(), agents: map[string]*agent.Agent{}, profiles: map[string]agent.Profile{}, activeAgent: "main",
+		startedAt: time.Now(),
+		conns:     map[*websocket.Conn]struct{}{},
 		upgr: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true }, // localhost organism
 		},
@@ -80,6 +88,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/files", s.handleFiles)
 	s.mux.HandleFunc("/api/reset", s.handleReset)
 	s.mux.HandleFunc("/api/health", s.handleHealth)
+	s.mux.HandleFunc("/api/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/api/update", s.handleUpdate)
 	s.mux.HandleFunc("/api/update/run", s.handleUpdateRun)
 	s.mux.HandleFunc("/api/snapshots", s.handleSnapshots)
@@ -103,7 +112,24 @@ func (s *Server) routes() {
 }
 
 // Handler returns the root handler.
-func (s *Server) Handler() http.Handler { return s.mux }
+func (s *Server) Handler() http.Handler { return s.withMiddleware(s.mux) }
+
+// Close retires live WebSocket sessions and cancels an in-flight generation.
+// HTTP shutdown itself is owned by the caller so it can drain requests.
+func (s *Server) Close() {
+	s.wsMu.Lock()
+	for conn := range s.conns {
+		_ = conn.Close()
+	}
+	s.wsMu.Unlock()
+
+	s.genMu.Lock()
+	if s.genCancel != nil {
+		s.genCancel()
+		s.genCancel = nil
+	}
+	s.genMu.Unlock()
+}
 
 // liveCount tracks WS clients (delta +1/-1, returns new total).
 func (s *Server) liveCount(delta int) int {
@@ -173,7 +199,16 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[ws] client connected (%d live)", s.liveCount(1))
-	defer func() { log.Printf("[ws] client left (%d live)", s.liveCount(-1)); conn.Close() }()
+	s.wsMu.Lock()
+	s.conns[conn] = struct{}{}
+	s.wsMu.Unlock()
+	defer func() {
+		s.wsMu.Lock()
+		delete(s.conns, conn)
+		s.wsMu.Unlock()
+		log.Printf("[ws] client left (%d live)", s.liveCount(-1))
+		conn.Close()
+	}()
 
 	sub, replay := s.bus.Subscribe()
 	defer s.bus.Unsubscribe(sub)
@@ -183,8 +218,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if raw, err := json.Marshal(map[string]any{"agent": map[string]any{"model": s.ag.Model, "provider": s.currentProviderName()}, "evolutions": s.ag.EvolutionCount()}); err == nil {
-		conn.WriteJSON(bus.Event{Type: "hello", Payload: raw, Time: time.Now().UTC().Format(time.RFC3339Nano)})
+	if s.ag != nil {
+		provider, model := s.ag.ProviderModel()
+		if raw, err := json.Marshal(map[string]any{
+			"agent":      map[string]any{"model": model, "provider": provider},
+			"evolutions": s.ag.EvolutionCount(),
+		}); err == nil {
+			_ = conn.WriteJSON(bus.Event{Type: "hello", Payload: raw, Time: time.Now().UTC().Format(time.RFC3339Nano)})
+		}
 	}
 
 	// reader: pings keepalive; writer: events
@@ -213,13 +254,6 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) currentProviderName() string {
-	if s.reg != nil {
-		return s.provName()
-	}
-	return "unknown"
-}
-
 // ---------- API ----------
 
 type chatReq struct {
@@ -238,24 +272,34 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := s.agentFor(req.Agent)
+	if target == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "agent runtime unavailable")
+		return
+	}
+	// Claim the single generation slot before replying, so two simultaneous
+	// chats cannot interleave one history or race the stop button.
+	s.genMu.Lock()
+	if s.genCancel != nil {
+		s.genMu.Unlock()
+		writeJSONError(w, http.StatusConflict, "a generation is already running")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	s.genCancel = cancel
+	s.genMu.Unlock()
+
 	go func() {
 		defer func() {
+			s.genMu.Lock()
+			s.genCancel = nil
+			s.genMu.Unlock()
+			cancel()
 			if rec := recover(); rec != nil {
 				log.Printf("chat panic: %v", rec)
 				s.bus.Publish("agent:token", map[string]string{"text": "\n\n⚠️ kernel hiccup — evolution continues."})
 			}
 		}()
 		// detached context: the organism keeps working after the HTTP reply
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		s.genMu.Lock()
-		s.genCancel = cancel
-		s.genMu.Unlock()
-		defer func() {
-			s.genMu.Lock()
-			s.genCancel = nil
-			s.genMu.Unlock()
-			cancel()
-		}()
 		s.bus.Publish("agent:active", map[string]string{"agent": target.ProfileID()})
 		target.Chat(ctx, req.Message)
 		s.bus.Publish("agent:phase", map[string]string{"phase": "idle"})
@@ -1111,11 +1155,80 @@ func (s *Server) handleDream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	provider, model, agentID, evolutions := "unknown", "", "unavailable", 0
+	if s.ag != nil {
+		provider, model = s.ag.ProviderModel()
+		agentID, evolutions = s.ag.ProfileID(), s.ag.EvolutionCount()
+	}
+	agents := 0
+	s.agentMu.RLock()
+	agents = len(s.agents)
+	s.agentMu.RUnlock()
+	if s.ag != nil {
+		agents++
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(map[string]any{
-		"status": "alive", "version": workspace.Version,
-		"provider": s.provName(), "model": s.ag.Model,
-		"evolutions": s.ag.EvolutionCount(),
+		"status":           "alive",
+		"version":          workspace.Version,
+		"uptime_seconds":   int64(time.Since(s.startedAt).Seconds()),
+		"started_at":       s.startedAt.UTC().Format(time.RFC3339),
+		"provider":         provider,
+		"model":            model,
+		"agent":            agentID,
+		"agents":           agents,
+		"evolutions":       evolutions,
+		"live_connections": s.liveCount(0),
+		"requests":         s.requests.Load(),
+		"errors":           s.errors.Load(),
+		"snapshots":        len(s.ws.ListSnapshots()),
 	})
+}
+
+// handleMetrics exposes a tiny Prometheus-compatible surface. It is deliberately
+// dependency-free: the UI does not need it, but operators and smoke tests can
+// watch the organism without scraping the whole API.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+
+	evolutions := 0
+	if s.ag != nil {
+		evolutions = s.ag.EvolutionCount()
+	}
+	agents := 0
+	s.agentMu.RLock()
+	agents = len(s.agents)
+	s.agentMu.RUnlock()
+	if s.ag != nil {
+		agents++
+	}
+
+	fmt.Fprintf(w, "# HELP evolv_up 1 while the organism is serving.\n")
+	fmt.Fprintf(w, "# TYPE evolv_up gauge\nevolv_up 1\n")
+	fmt.Fprintf(w, "# HELP evolv_uptime_seconds Seconds since this server started.\n")
+	fmt.Fprintf(w, "# TYPE evolv_uptime_seconds gauge\nevolv_uptime_seconds %d\n", int64(time.Since(s.startedAt).Seconds()))
+	fmt.Fprintf(w, "# HELP evolv_http_requests_total HTTP requests handled.\n")
+	fmt.Fprintf(w, "# TYPE evolv_http_requests_total counter\nevolv_http_requests_total %d\n", s.requests.Load())
+	fmt.Fprintf(w, "# HELP evolv_http_errors_total HTTP responses with status >= 500.\n")
+	fmt.Fprintf(w, "# TYPE evolv_http_errors_total counter\nevolv_http_errors_total %d\n", s.errors.Load())
+	fmt.Fprintf(w, "# HELP evolv_ws_connections Live WebSocket clients.\n")
+	fmt.Fprintf(w, "# TYPE evolv_ws_connections gauge\nevolv_ws_connections %d\n", s.liveCount(0))
+	fmt.Fprintf(w, "# HELP evolv_agents Configured agent strands.\n")
+	fmt.Fprintf(w, "# TYPE evolv_agents gauge\nevolv_agents %d\n", agents)
+	fmt.Fprintf(w, "# HELP evolv_evolutions_total Mutations committed by the active agent.\n")
+	fmt.Fprintf(w, "# TYPE evolv_evolutions_total counter\nevolv_evolutions_total %d\n", evolutions)
+	fmt.Fprintf(w, "# HELP evolv_snapshots Genome snapshots available.\n")
+	fmt.Fprintf(w, "# TYPE evolv_snapshots gauge\nevolv_snapshots %d\n", len(s.ws.ListSnapshots()))
 }
 
 // WatchReleases polls GitHub for newer releases and pushes a live banner to

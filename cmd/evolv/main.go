@@ -258,8 +258,17 @@ func main() {
 		}()
 	}
 
+	httpSrv := &http.Server{
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		// WriteTimeout is intentionally zero: a chat turn and the WebSocket
+		// mirror are long-lived responses, so this must not cut them off.
+	}
 	go func() {
-		if err := http.Serve(ln, srv.Handler()); err != nil {
+		if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}
 	}()
@@ -267,6 +276,17 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
+
+	// Stop accepting work, retire live browser sessions, then drain in-flight
+	// requests with a bounded grace period. The genome is already on disk.
+	srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		log.Printf("shutdown: %v", err)
+	}
+	w.Stop()
+
 	fmt.Println()
 	fmt.Println("  " + paint(dim, "organism paused · genome preserved at "+ws.Root))
 }

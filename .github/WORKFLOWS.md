@@ -37,6 +37,9 @@ toolchain it actually used.
   it validates and builds every artifact without creating a tag or release.
 - **`GOTOOLCHAIN=local`** is set in CI, release, and nightly. A missing Go
   toolchain fails immediately instead of downloading an unexpected one.
+- **Security and release use the latest `1.26.x` patch**, not the bare `go.mod`
+  directive. A Go patch release can fix stdlib CVEs; `govulncheck` is run with
+  that patched toolchain and the release binaries are built with it.
 - **`GOFLAGS=-mod=readonly`** prevents CI from silently editing `go.mod` or
   `go.sum`; the separate `go mod tidy -diff` check reports drift.
 - **Artifacts are verified before publish.** The release job checks all six

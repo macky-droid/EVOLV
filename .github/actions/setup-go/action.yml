@@ -1,13 +1,18 @@
 name: setup-go
-description: Install the Go toolchain declared by go.mod and warm the module/build caches.
-
+description: Install the Go toolchain and warm the module/build caches.
+inputs:
+  go-version:
+    description: "Go version/range (e.g. 1.26.x). Empty uses the go.mod directive."
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version-file: go.mod
+        go-version: ${{ inputs.go-version }}
+        go-version-file: ${{ inputs.go-version == '' && 'go.mod' || '' }}
         cache: true
         cache-dependency-path: go.sum
 
